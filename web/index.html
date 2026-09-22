@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DFW Food Access Map</title>
+<link href="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.css" rel="stylesheet">
+<script src="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.js"></script>
+<style>
+  :root {
+    --ink: #0b0b0b;
+    --ink-secondary: #52514e;
+    --surface: #fcfcfb;
+    --border: rgba(11,11,11,0.10);
+    --blue: #2a78d6;
+    --orange: #eb6834;
+    --aqua: #1baf7a;
+    --muted: #898781;
+  }
+  html, body { margin: 0; height: 100%; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); }
+  #map { position: absolute; inset: 0; }
+  .panel {
+    position: absolute; top: 12px; left: 12px; z-index: 1;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px 14px; width: 220px; box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+    font-size: 13px;
+  }
+  .panel h1 { font-size: 14px; margin: 0 0 10px; }
+  .layer-toggle { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; font-weight: 600; cursor: pointer; }
+  .legend { margin: 4px 0 12px 22px; }
+  .legend:last-child { margin-bottom: 0; }
+  .legend-row { display: flex; align-items: center; gap: 6px; margin: 3px 0; color: var(--ink-secondary); cursor: pointer; }
+  .legend-row input { margin: 0; }
+  .swatch { width: 10px; height: 10px; flex-shrink: 0; }
+  .swatch-triangle {
+    width: 0; height: 0; background: none !important;
+    border-left: 5px solid transparent; border-right: 5px solid transparent; border-bottom: 9px solid;
+  }
+  .swatch-square { border-radius: 2px; }
+  .count { color: var(--ink-secondary); font-weight: 400; margin-left: auto; }
+  .filter-row {
+    display: flex; align-items: center; gap: 6px; margin: 0 0 12px;
+    color: var(--ink-secondary); font-size: 12px;
+  }
+  .filter-row input {
+    width: 56px; font-size: 12px; padding: 2px 4px;
+    border: 1px solid var(--border); border-radius: 4px;
+  }
+  .section-divider { border: none; border-top: 1px solid var(--border); margin: 4px 0 10px; }
+  .maplibregl-popup-content { font-size: 13px; }
+  .maplibregl-popup-content h3 { margin: 0 0 4px; font-size: 13px; }
+  .maplibregl-popup-content p { margin: 2px 0; color: #333; }
+  .popup-actions { display: flex; gap: 6px; margin-top: 8px; }
+  .popup-actions button, .popup-edit-form button {
+    font-size: 12px; padding: 3px 8px; border: 1px solid var(--border); border-radius: 4px;
+    background: var(--surface); cursor: pointer;
+  }
+  .popup-actions button.popup-delete-btn { color: #b02a2a; border-color: rgba(176,42,42,0.35); }
+  .popup-edit-form label { display: block; font-size: 12px; color: var(--ink-secondary); margin-top: 6px; }
+  .popup-edit-form input, .popup-edit-form select {
+    width: 100%; box-sizing: border-box; font-size: 13px; padding: 3px 5px; margin-top: 2px;
+    border: 1px solid var(--border); border-radius: 4px;
+  }
+  .popup-edit-form .popup-actions { margin-top: 10px; }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div class="panel">
+  <h1>DFW Food Access Map</h1>
+
+  <label class="layer-toggle">
+    <input type="checkbox" id="toggle-stores" checked>
+    Food stores <span class="count" id="count-stores"></span>
+  </label>
+  <div class="legend">
+    <label class="legend-row"><input type="checkbox" class="cat-checkbox" data-group="stores" data-category="grocery" checked><span class="swatch swatch-triangle" style="border-bottom-color:var(--blue)"></span>Grocery / supermarket</label>
+    <label class="legend-row"><input type="checkbox" class="cat-checkbox" data-group="stores" data-category="mass_merchandiser" checked><span class="swatch swatch-triangle" style="border-bottom-color:var(--orange)"></span>Mass merchandiser</label>
+    <label class="legend-row"><input type="checkbox" class="cat-checkbox" data-group="stores" data-category="convenience" checked><span class="swatch swatch-triangle" style="border-bottom-color:var(--aqua)"></span>Convenience</label>
+    <label class="legend-row"><input type="checkbox" class="cat-checkbox" data-group="stores" data-category="other" checked><span class="swatch swatch-triangle" style="border-bottom-color:var(--muted)"></span>Other</label>
+  </div>
+
+  <label class="layer-toggle">
+    <input type="checkbox" id="toggle-housing" checked>
+    Housing <span class="count" id="count-housing"></span>
+  </label>
+  <div class="filter-row">
+    Min. units
+    <input type="number" id="min-units" min="0" step="1" placeholder="0">
+  </div>
+  <div class="legend">
+    <label class="legend-row"><input type="checkbox" class="cat-checkbox" data-group="housing" data-category="public_housing" checked><span class="swatch swatch-square" style="background:var(--blue)"></span>Public housing</label>
+    <label class="legend-row"><input type="checkbox" class="cat-checkbox" data-group="housing" data-category="subsidized_multifamily" checked><span class="swatch swatch-square" style="background:var(--orange)"></span>Subsidized multifamily</label>
+    <label class="legend-row"><input type="checkbox" class="cat-checkbox" data-group="housing" data-category="lihtc" checked><span class="swatch swatch-square" style="background:var(--aqua)"></span>LIHTC</label>
+    <label class="legend-row"><input type="checkbox" class="cat-checkbox" data-group="housing" data-category="market_rate" checked><span class="swatch swatch-square" style="background:var(--muted)"></span>Market rate</label>
+  </div>
+
+  <hr class="section-divider">
+
+  <label class="layer-toggle">
+    <input type="checkbox" id="toggle-heatmap">
+    Toggle food access heatmap
+  </label>
+  <div class="legend" id="heatmap-legend" style="display:none">
+    <div class="legend-row"><span class="swatch swatch-square" style="background:#0ca30c"></span>&le; 1 mi from a checked store</div>
+    <div class="legend-row"><span class="swatch swatch-square" style="background:#fab219"></span>1&ndash;3 mi</div>
+    <div class="legend-row"><span class="swatch swatch-square" style="background:#d03b3b"></span>&gt; 3 mi</div>
+  </div>
+</div>
+
+<script>
+const STORE_COLOR = ["match", ["get", "store_type"],
+  "grocery", "#2a78d6",
+  "mass_merchandiser", "#eb6834",
+  "convenience", "#1baf7a",
+  "#898781"];
+
+const HOUSING_COLOR = ["match", ["get", "property_type"],
+  "public_housing", "#2a78d6",
+  "subsidized_multifamily", "#eb6834",
+  "lihtc", "#1baf7a",
+  "#898781"];
+
+const map = new maplibregl.Map({
+  container: "map",
+  style: "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+  center: [-96.85, 32.85],
+  zoom: 9,
+});
+map.addControl(new maplibregl.NavigationControl(), "top-right");
+
+// Food stores and housing need visually distinct marker shapes, not just
+// colors — generated on canvas at runtime (as SDF images, so icon-color
+// can still tint them per-category the same way circle-color did).
+function makeIcon(draw, size = 48) {
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "black";
+  draw(ctx, size);
+  return ctx.getImageData(0, 0, size, size);
+}
+
+function registerIcons() {
+  map.addImage("triangle-icon", makeIcon((ctx, size) => {
+    const pad = size * 0.12;
+    ctx.beginPath();
+    ctx.moveTo(size / 2, pad);
+    ctx.lineTo(size - pad, size - pad);
+    ctx.lineTo(pad, size - pad);
+    ctx.closePath();
+    ctx.fill();
+  }), { sdf: true });
+
+  map.addImage("square-icon", makeIcon((ctx, size) => {
+    const pad = size * 0.18;
+    ctx.fillRect(pad, pad, size - pad * 2, size - pad * 2);
+  }), { sdf: true });
+}
+
+function addPointLayer(id, data, colorExpr, iconImage) {
+  map.addSource(id, {
+    type: "geojson",
+    data,
+    cluster: true,
+    clusterMaxZoom: 13,
+    clusterRadius: 45,
+  });
+
+  map.addLayer({
+    id: `${id}-clusters`,
+    type: "circle",
+    source: id,
+    filter: ["has", "point_count"],
+    paint: {
+      "circle-color": "#52514e",
+      "circle-opacity": 0.75,
+      "circle-radius": ["step", ["get", "point_count"], 14, 100, 18, 1000, 24],
+      "circle-stroke-width": 1,
+      "circle-stroke-color": "#fcfcfb",
+    },
+  });
+
+  map.addLayer({
+    id: `${id}-cluster-count`,
+    type: "symbol",
+    source: id,
+    filter: ["has", "point_count"],
+    layout: { "text-field": "{point_count_abbreviated}", "text-size": 11 },
+    paint: { "text-color": "#fcfcfb" },
+  });
+
+  map.addLayer({
+    id: `${id}-points`,
+    type: "symbol",
+    source: id,
+    filter: ["!", ["has", "point_count"]],
+    layout: {
+      "icon-image": iconImage,
+      "icon-size": 0.4,
+      "icon-allow-overlap": true,
+    },
+    paint: {
+      "icon-color": colorExpr,
+      "icon-halo-color": "#fcfcfb",
+      "icon-halo-width": 1,
+    },
+  });
+
+  map.on("click", `${id}-clusters`, (e) => {
+    const feature = map.queryRenderedFeatures(e.point, { layers: [`${id}-clusters`] })[0];
+    map.getSource(id).getClusterExpansionZoom(feature.properties.cluster_id, (err, zoom) => {
+      if (err) return;
+      map.easeTo({ center: feature.geometry.coordinates, zoom });
+    });
+  });
+
+  map.on("mouseenter", `${id}-points`, () => (map.getCanvas().style.cursor = "pointer"));
+  map.on("mouseleave", `${id}-points`, () => (map.getCanvas().style.cursor = ""));
+}
+
+async function loadGeoJSON(url) {
+  const res = await fetch(url);
+  return res.json();
+}
+
+// --- Manual edit / delete popups -------------------------------------
+// A click on a point opens a read-only popup with Edit/Delete actions.
+// Both call the small Flask API in webapp.py, which writes straight to
+// SQLite and flags the row is_manually_edited — see storage/database.py's
+// upsert_records() for why that flag means a pipeline re-run can never
+// silently overwrite or resurrect what gets changed here. On success we
+// also patch the in-memory feature/array so the map reflects the change
+// immediately, without a full reload.
+const LAYER_CONFIG = {
+  stores: {
+    typeField: "store_type",
+    typeOptions: ["grocery", "mass_merchandiser", "convenience", "other"],
+    editUrl: "/api/stores/edit",
+    deleteUrl: "/api/stores/delete",
+  },
+  housing: {
+    typeField: "property_type",
+    typeOptions: ["public_housing", "subsidized_multifamily", "lihtc", "market_rate"],
+    editUrl: "/api/housing/edit",
+    deleteUrl: "/api/housing/delete",
+  },
+};
+
+function popupViewHTML(props) {
+  const rows = Object.entries(props)
+    .filter(([k, v]) => v !== null && v !== "" && k !== "source" && k !== "source_id")
+    .map(([k, v]) => `<p><strong>${k.replace(/_/g, " ")}:</strong> ${v}</p>`)
+    .join("");
+  return `
+    <h3>${props.name || "(unnamed)"}</h3>
+    ${rows}
+    <div class="popup-actions">
+      <button class="popup-edit-btn">Edit</button>
+      <button class="popup-delete-btn">Delete</button>
+    </div>
+  `;
+}
+
+function popupEditHTML(props, typeField, typeOptions) {
+  const escapedName = (props.name || "").replace(/"/g, "&quot;");
+  const options = typeOptions
+    .map((o) => `<option value="${o}" ${o === props[typeField] ? "selected" : ""}>${o.replace(/_/g, " ")}</option>`)
+    .join("");
+  return `
+    <div class="popup-edit-form">
+      <label>Name<input type="text" class="popup-name-input" value="${escapedName}"></label>
+      <label>Type<select class="popup-type-input">${options}</select></label>
+      <div class="popup-actions">
+        <button class="popup-save-btn">Save</button>
+        <button class="popup-cancel-btn">Cancel</button>
+      </div>
+    </div>
+  `;
+}
+
+// `dataset` is the layer's live GeoJSON object (its `.features` array is
+// mutated in place after a successful edit/delete) and `refresh` is that
+// layer's existing filter function, so a change shows up under whatever
+// category filter is currently applied.
+//
+// popup.setHTML() fully replaces the popup's DOM content, so any listener
+// bound to a button inside it is orphaned the next time setHTML() runs
+// (e.g. going form -> view after Save). renderView()/renderEdit() below
+// always re-wire their own buttons right after setting the HTML, rather
+// than relying on listeners attached once at popup-open time.
+function setupEditablePopups(id, dataset, refresh) {
+  const { typeField, typeOptions, editUrl, deleteUrl } = LAYER_CONFIG[id];
+
+  map.on("click", `${id}-points`, (e) => {
+    const feature = e.features[0];
+    const props = feature.properties;
+    const popup = new maplibregl.Popup().setLngLat(feature.geometry.coordinates).addTo(map);
+
+    function renderView() {
+      popup.setHTML(popupViewHTML(props));
+      const el = popup.getElement();
+      el.querySelector(".popup-edit-btn").addEventListener("click", renderEdit);
+      el.querySelector(".popup-delete-btn").addEventListener("click", handleDelete);
+    }
+
+    function renderEdit() {
+      popup.setHTML(popupEditHTML(props, typeField, typeOptions));
+      const el = popup.getElement();
+      el.querySelector(".popup-cancel-btn").addEventListener("click", renderView);
+      el.querySelector(".popup-save-btn").addEventListener("click", handleSave);
+    }
+
+    async function handleSave(evt) {
+      const button = evt.target;
+      button.disabled = true;
+      const el = popup.getElement();
+      const name = el.querySelector(".popup-name-input").value.trim();
+      const typeValue = el.querySelector(".popup-type-input").value;
+      const body = { source: props.source, source_id: props.source_id, name, [typeField]: typeValue };
+
+      try {
+        const res = await fetch(editUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) throw new Error(`edit failed: ${res.status}`);
+
+        Object.assign(props, { name, [typeField]: typeValue });
+        const stored = dataset.features.find(
+          (f) => f.properties.source === props.source && f.properties.source_id === props.source_id
+        );
+        if (stored) Object.assign(stored.properties, { name, [typeField]: typeValue });
+        refresh();
+        renderView();
+      } catch (err) {
+        alert(`Could not save edit: ${err.message}`);
+        button.disabled = false;
+      }
+    }
+
+    async function handleDelete() {
+      if (!confirm(`Delete "${props.name || "(unnamed)"}"? This removes it from the map.`)) return;
+      try {
+        const res = await fetch(deleteUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ source: props.source, source_id: props.source_id }),
+        });
+        if (!res.ok) throw new Error(`delete failed: ${res.status}`);
+
+        dataset.features = dataset.features.filter(
+          (f) => !(f.properties.source === props.source && f.properties.source_id === props.source_id)
+        );
+        refresh();
+        popup.remove();
+      } catch (err) {
+        alert(`Could not delete: ${err.message}`);
+      }
+    }
+
+    renderView();
+  });
+}
+
+// Category checkboxes filter each layer's SOURCE data (not just a layer
+// "filter" property) so cluster counts recompute properly — hiding
+// "convenience" should shrink cluster bubbles, not just hide the
+// individual triangles once you zoom in past clustering.
+function checkedCategories(group) {
+  return [...document.querySelectorAll(`.cat-checkbox[data-group="${group}"]:checked`)].map((el) => el.dataset.category);
+}
+
+function syncParentCheckbox(group) {
+  const boxes = [...document.querySelectorAll(`.cat-checkbox[data-group="${group}"]`)];
+  const checkedCount = boxes.filter((b) => b.checked).length;
+  const parent = document.getElementById(`toggle-${group}`);
+  parent.checked = checkedCount === boxes.length;
+  parent.indeterminate = checkedCount > 0 && checkedCount < boxes.length;
+}
+
+// --- Food access heatmap ---------------------------------------------
+// Colors every location by straight-line distance to the nearest
+// currently-checked food store (green <=1mi, yellow 1-3mi, red beyond) —
+// mathematically the same thing as "a green/yellow circle around every
+// store", just computed the other way around. Rendered as a raster image
+// rather than thousands of vector circles: MapLibre's circle-radius is in
+// screen pixels, not real-world miles, so an actual "1 mile" band needs
+// real lat/lon distance math, not a shape trick, and a single image is
+// far cheaper to draw than ~7,000 overlapping geographic polygons.
+const HEATMAP_BOUNDS = { south: 32.20, west: -97.65, north: 33.45, east: -96.35 }; // matches config/settings.py DFW_BBOX
+const HEATMAP_COLORS = { good: [12, 163, 12], warning: [250, 178, 25], critical: [208, 59, 59] };
+const HEATMAP_ALPHA = 170; // of 255 — lets the basemap/labels show through
+const HEATMAP_WIDTH = 320;
+const REF_LAT = 32.8; // DFW center — used as a single reference so miles-per-degree-longitude doesn't need to vary per row
+const MI_PER_DEG_LAT = 69.05;
+const MI_PER_DEG_LON = MI_PER_DEG_LAT * Math.cos((REF_LAT * Math.PI) / 180);
+const HEATMAP_HEIGHT = Math.round(
+  (HEATMAP_WIDTH * ((HEATMAP_BOUNDS.north - HEATMAP_BOUNDS.south) * MI_PER_DEG_LAT)) /
+    ((HEATMAP_BOUNDS.east - HEATMAP_BOUNDS.west) * MI_PER_DEG_LON)
+);
+const STORE_BUCKET_MILES = 1; // spatial index cell size, for fast nearest-store lookups — not the raster resolution
+const MAX_SEARCH_MILES = 3; // beyond this, a cell is "critical" regardless of the exact distance
+
+function haversineMiles(lat1, lon1, lat2, lon2) {
+  const R = 3958.8;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+// Buckets stores into ~1mi grid cells so each raster cell only checks
+// nearby buckets instead of every store — same trick as the Python
+// dedupe pipeline's proximity index.
+function buildStoreIndex(features) {
+  const index = new Map();
+  for (const f of features) {
+    const [lon, lat] = f.geometry.coordinates;
+    const key = `${Math.floor((lon * MI_PER_DEG_LON) / STORE_BUCKET_MILES)},${Math.floor((lat * MI_PER_DEG_LAT) / STORE_BUCKET_MILES)}`;
+    if (!index.has(key)) index.set(key, []);
+    index.get(key).push([lat, lon]);
+  }
+  return index;
+}
+
+function nearestStoreMiles(lat, lon, index) {
+  const cx = Math.floor((lon * MI_PER_DEG_LON) / STORE_BUCKET_MILES);
+  const cy = Math.floor((lat * MI_PER_DEG_LAT) / STORE_BUCKET_MILES);
+  const searchCells = Math.ceil(MAX_SEARCH_MILES / STORE_BUCKET_MILES);
+  let best = Infinity;
+  for (let dx = -searchCells; dx <= searchCells; dx++) {
+    for (let dy = -searchCells; dy <= searchCells; dy++) {
+      const bucket = index.get(`${cx + dx},${cy + dy}`);
+      if (!bucket) continue;
+      for (const [slat, slon] of bucket) {
+        const d = haversineMiles(lat, lon, slat, slon);
+        if (d < best) best = d;
+      }
+    }
+  }
+  return best;
+}
+
+function renderHeatmapImage(storeFeatures) {
+  const index = buildStoreIndex(storeFeatures);
+  const canvas = document.createElement("canvas");
+  canvas.width = HEATMAP_WIDTH;
+  canvas.height = HEATMAP_HEIGHT;
+  const ctx = canvas.getContext("2d");
+  const image = ctx.createImageData(HEATMAP_WIDTH, HEATMAP_HEIGHT);
+
+  for (let row = 0; row < HEATMAP_HEIGHT; row++) {
+    const lat = HEATMAP_BOUNDS.north - (row / (HEATMAP_HEIGHT - 1)) * (HEATMAP_BOUNDS.north - HEATMAP_BOUNDS.south);
+    for (let col = 0; col < HEATMAP_WIDTH; col++) {
+      const lon = HEATMAP_BOUNDS.west + (col / (HEATMAP_WIDTH - 1)) * (HEATMAP_BOUNDS.east - HEATMAP_BOUNDS.west);
+      const distance = nearestStoreMiles(lat, lon, index);
+      const color = distance <= 1 ? HEATMAP_COLORS.good : distance <= 3 ? HEATMAP_COLORS.warning : HEATMAP_COLORS.critical;
+      const i = (row * HEATMAP_WIDTH + col) * 4;
+      image.data[i] = color[0];
+      image.data[i + 1] = color[1];
+      image.data[i + 2] = color[2];
+      image.data[i + 3] = HEATMAP_ALPHA;
+    }
+  }
+  ctx.putImageData(image, 0, 0);
+  return canvas.toDataURL();
+}
+
+map.on("load", async () => {
+  const [stores, housing] = await Promise.all([
+    loadGeoJSON("data/food_stores.geojson"),
+    loadGeoJSON("data/housing_properties.geojson"),
+  ]);
+
+  // Added before the point layers so it paints below them — pins stay
+  // visible and clickable on top of the color bands. Starts with a blank
+  // 1x1 image since the real one is only computed once the checkbox is
+  // first turned on.
+  const BLANK_IMAGE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+  map.addSource("heatmap", {
+    type: "image",
+    url: BLANK_IMAGE,
+    coordinates: [
+      [HEATMAP_BOUNDS.west, HEATMAP_BOUNDS.north],
+      [HEATMAP_BOUNDS.east, HEATMAP_BOUNDS.north],
+      [HEATMAP_BOUNDS.east, HEATMAP_BOUNDS.south],
+      [HEATMAP_BOUNDS.west, HEATMAP_BOUNDS.south],
+    ],
+  });
+  map.addLayer({ id: "heatmap-layer", type: "raster", source: "heatmap", layout: { visibility: "none" } });
+
+  registerIcons();
+  addPointLayer("stores", stores, STORE_COLOR, "triangle-icon");
+  addPointLayer("housing", housing, HOUSING_COLOR, "square-icon");
+
+  document.getElementById("count-stores").textContent = `(${stores.features.length.toLocaleString()})`;
+  document.getElementById("count-housing").textContent = `(${housing.features.length.toLocaleString()})`;
+
+  let currentStoreFeatures = stores.features; // kept in sync by applyStoresFilter; read by the heatmap toggle
+  let heatmapNeedsRecompute = true;
+
+  function recomputeHeatmap() {
+    map.getSource("heatmap").updateImage({ url: renderHeatmapImage(currentStoreFeatures) });
+    heatmapNeedsRecompute = false;
+  }
+
+  function applyStoresFilter() {
+    const checked = checkedCategories("stores");
+    const filtered = {
+      type: "FeatureCollection",
+      features: stores.features.filter((f) => checked.includes(f.properties.store_type)),
+    };
+    currentStoreFeatures = filtered.features;
+    map.getSource("stores").setData(filtered);
+    document.getElementById("count-stores").textContent = `(${filtered.features.length.toLocaleString()})`;
+
+    if (document.getElementById("toggle-heatmap").checked) {
+      recomputeHeatmap();
+    } else {
+      heatmapNeedsRecompute = true;
+    }
+  }
+
+  // "Min. units" hides housing properties known to be smaller than the
+  // entered value. A property with no known unit count (many parcel
+  // sources don't have one — see README) is kept rather than hidden,
+  // since we can't tell whether it would pass the filter or not.
+  function applyHousingFilter() {
+    const checked = checkedCategories("housing");
+    const minUnits = Number(document.getElementById("min-units").value) || 0;
+    const filtered = {
+      type: "FeatureCollection",
+      features: housing.features.filter((f) => {
+        if (!checked.includes(f.properties.property_type)) return false;
+        const units = f.properties.total_units;
+        return minUnits === 0 || units === null || units === undefined || units >= minUnits;
+      }),
+    };
+    map.getSource("housing").setData(filtered);
+    document.getElementById("count-housing").textContent = `(${filtered.features.length.toLocaleString()})`;
+  }
+
+  setupEditablePopups("stores", stores, applyStoresFilter);
+  setupEditablePopups("housing", housing, applyHousingFilter);
+
+  document.querySelectorAll('.cat-checkbox[data-group="stores"]').forEach((cb) =>
+    cb.addEventListener("change", () => {
+      syncParentCheckbox("stores");
+      applyStoresFilter();
+    })
+  );
+  document.querySelectorAll('.cat-checkbox[data-group="housing"]').forEach((cb) =>
+    cb.addEventListener("change", () => {
+      syncParentCheckbox("housing");
+      applyHousingFilter();
+    })
+  );
+
+  document.getElementById("toggle-stores").addEventListener("change", (e) => {
+    document.querySelectorAll('.cat-checkbox[data-group="stores"]').forEach((cb) => (cb.checked = e.target.checked));
+    applyStoresFilter();
+  });
+  document.getElementById("toggle-housing").addEventListener("change", (e) => {
+    document.querySelectorAll('.cat-checkbox[data-group="housing"]').forEach((cb) => (cb.checked = e.target.checked));
+    applyHousingFilter();
+  });
+
+  document.getElementById("min-units").addEventListener("input", applyHousingFilter);
+
+  document.getElementById("toggle-heatmap").addEventListener("change", (e) => {
+    const visible = e.target.checked;
+    map.setLayoutProperty("heatmap-layer", "visibility", visible ? "visible" : "none");
+    document.getElementById("heatmap-legend").style.display = visible ? "block" : "none";
+    if (visible && heatmapNeedsRecompute) {
+      recomputeHeatmap();
+    }
+  });
+});
+</script>
+</body>
+</html>
