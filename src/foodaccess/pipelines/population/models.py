@@ -49,6 +49,17 @@ class FoodAccessAtlasRecord:
 
 
 @dataclass
+class TractGeometry:
+    tract_geoid: str
+    centroid_lat: Optional[float]
+    centroid_lon: Optional[float]
+    land_sqmi: Optional[float]
+
+    def to_row(self, fetched_at: str) -> dict:
+        return {**self.__dict__, "fetched_at": fetched_at}
+
+
+@dataclass
 class FoodInsecurityCounty:
     county_fips: str
     year: int

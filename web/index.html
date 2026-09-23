@@ -70,6 +70,13 @@
 
 <div class="panel">
   <h1>DFW Food Access Map</h1>
+  <a href="opportunity.html" style="display:block; font-size:12px; color:var(--blue); text-decoration:none; margin:-4px 0 2px;">View housing opportunity ranking &rarr;</a>
+  <a href="opportunity_tracts.html" style="display:block; font-size:12px; color:var(--blue); text-decoration:none; margin:0 0 10px;">View tract opportunity ranking &rarr;</a>
+
+  <div style="margin-bottom:10px;">
+    <input type="text" id="search-name" placeholder="Search by name"
+      style="width:100%; box-sizing:border-box; padding:5px 7px; font-size:13px; border:1px solid var(--border); border-radius:4px;">
+  </div>
 
   <label class="layer-toggle">
     <input type="checkbox" id="toggle-stores" checked>
@@ -292,78 +299,85 @@ function popupEditHTML(props, typeField, typeOptions) {
 // always re-wire their own buttons right after setting the HTML, rather
 // than relying on listeners attached once at popup-open time.
 function setupEditablePopups(id, dataset, refresh) {
-  const { typeField, typeOptions, editUrl, deleteUrl } = LAYER_CONFIG[id];
-
   map.on("click", `${id}-points`, (e) => {
-    const feature = e.features[0];
-    const props = feature.properties;
-    const popup = new maplibregl.Popup().setLngLat(feature.geometry.coordinates).addTo(map);
-
-    function renderView() {
-      popup.setHTML(popupViewHTML(props));
-      const el = popup.getElement();
-      el.querySelector(".popup-edit-btn").addEventListener("click", renderEdit);
-      el.querySelector(".popup-delete-btn").addEventListener("click", handleDelete);
-    }
-
-    function renderEdit() {
-      popup.setHTML(popupEditHTML(props, typeField, typeOptions));
-      const el = popup.getElement();
-      el.querySelector(".popup-cancel-btn").addEventListener("click", renderView);
-      el.querySelector(".popup-save-btn").addEventListener("click", handleSave);
-    }
-
-    async function handleSave(evt) {
-      const button = evt.target;
-      button.disabled = true;
-      const el = popup.getElement();
-      const name = el.querySelector(".popup-name-input").value.trim();
-      const typeValue = el.querySelector(".popup-type-input").value;
-      const body = { source: props.source, source_id: props.source_id, name, [typeField]: typeValue };
-
-      try {
-        const res = await fetch(editUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
-        if (!res.ok) throw new Error(`edit failed: ${res.status}`);
-
-        Object.assign(props, { name, [typeField]: typeValue });
-        const stored = dataset.features.find(
-          (f) => f.properties.source === props.source && f.properties.source_id === props.source_id
-        );
-        if (stored) Object.assign(stored.properties, { name, [typeField]: typeValue });
-        refresh();
-        renderView();
-      } catch (err) {
-        alert(`Could not save edit: ${err.message}`);
-        button.disabled = false;
-      }
-    }
-
-    async function handleDelete() {
-      if (!confirm(`Delete "${props.name || "(unnamed)"}"? This removes it from the map.`)) return;
-      try {
-        const res = await fetch(deleteUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ source: props.source, source_id: props.source_id }),
-        });
-        if (!res.ok) throw new Error(`delete failed: ${res.status}`);
-
-        dataset.features = dataset.features.filter(
-          (f) => !(f.properties.source === props.source && f.properties.source_id === props.source_id)
-        );
-        refresh();
-        popup.remove();
-      } catch (err) {
-        alert(`Could not delete: ${err.message}`);
-      }
-    }
-
-    renderView();
+    openFeaturePopup(id, e.features[0], dataset, refresh);
   });
+}
+
+// Split out from setupEditablePopups so a map-deep-link (see the
+// "type=housing"/"type=stores" URL handling near the bottom of the load
+// callback) can open the exact same popup a real click would, without
+// needing a synthetic click event or a rendered pixel position.
+function openFeaturePopup(id, feature, dataset, refresh) {
+  const { typeField, typeOptions, editUrl, deleteUrl } = LAYER_CONFIG[id];
+  const props = feature.properties;
+  const popup = new maplibregl.Popup().setLngLat(feature.geometry.coordinates).addTo(map);
+
+  function renderView() {
+    popup.setHTML(popupViewHTML(props));
+    const el = popup.getElement();
+    el.querySelector(".popup-edit-btn").addEventListener("click", renderEdit);
+    el.querySelector(".popup-delete-btn").addEventListener("click", handleDelete);
+  }
+
+  function renderEdit() {
+    popup.setHTML(popupEditHTML(props, typeField, typeOptions));
+    const el = popup.getElement();
+    el.querySelector(".popup-cancel-btn").addEventListener("click", renderView);
+    el.querySelector(".popup-save-btn").addEventListener("click", handleSave);
+  }
+
+  async function handleSave(evt) {
+    const button = evt.target;
+    button.disabled = true;
+    const el = popup.getElement();
+    const name = el.querySelector(".popup-name-input").value.trim();
+    const typeValue = el.querySelector(".popup-type-input").value;
+    const body = { source: props.source, source_id: props.source_id, name, [typeField]: typeValue };
+
+    try {
+      const res = await fetch(editUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(`edit failed: ${res.status}`);
+
+      Object.assign(props, { name, [typeField]: typeValue });
+      const stored = dataset.features.find(
+        (f) => f.properties.source === props.source && f.properties.source_id === props.source_id
+      );
+      if (stored) Object.assign(stored.properties, { name, [typeField]: typeValue });
+      refresh();
+      renderView();
+    } catch (err) {
+      alert(`Could not save edit: ${err.message}`);
+      button.disabled = false;
+    }
+  }
+
+  async function handleDelete() {
+    if (!confirm(`Delete "${props.name || "(unnamed)"}"? This removes it from the map.`)) return;
+    try {
+      const res = await fetch(deleteUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source: props.source, source_id: props.source_id }),
+      });
+      if (!res.ok) throw new Error(`delete failed: ${res.status}`);
+
+      dataset.features = dataset.features.filter(
+        (f) => !(f.properties.source === props.source && f.properties.source_id === props.source_id)
+      );
+      refresh();
+      popup.remove();
+    } catch (err) {
+      alert(`Could not delete: ${err.message}`);
+    }
+  }
+
+  renderView();
+  return popup;
 }
 
 // Category checkboxes filter each layer's SOURCE data (not just a layer
@@ -509,11 +523,20 @@ map.on("load", async () => {
     heatmapNeedsRecompute = false;
   }
 
+  // Shared by both filters below — a blank search box matches everything
+  // (including unnamed points); once there's a search term, a point with
+  // no name can never match it, so it's excluded rather than kept.
+  function matchesSearch(name) {
+    const term = document.getElementById("search-name").value.trim().toLowerCase();
+    if (!term) return true;
+    return !!name && name.toLowerCase().includes(term);
+  }
+
   function applyStoresFilter() {
     const checked = checkedCategories("stores");
     const filtered = {
       type: "FeatureCollection",
-      features: stores.features.filter((f) => checked.includes(f.properties.store_type)),
+      features: stores.features.filter((f) => checked.includes(f.properties.store_type) && matchesSearch(f.properties.name)),
     };
     currentStoreFeatures = filtered.features;
     map.getSource("stores").setData(filtered);
@@ -537,6 +560,7 @@ map.on("load", async () => {
       type: "FeatureCollection",
       features: housing.features.filter((f) => {
         if (!checked.includes(f.properties.property_type)) return false;
+        if (!matchesSearch(f.properties.name)) return false;
         const units = f.properties.total_units;
         return minUnits === 0 || units === null || units === undefined || units >= minUnits;
       }),
@@ -572,6 +596,11 @@ map.on("load", async () => {
 
   document.getElementById("min-units").addEventListener("input", applyHousingFilter);
 
+  document.getElementById("search-name").addEventListener("input", () => {
+    applyStoresFilter();
+    applyHousingFilter();
+  });
+
   document.getElementById("toggle-heatmap").addEventListener("change", (e) => {
     const visible = e.target.checked;
     map.setLayoutProperty("heatmap-layer", "visibility", visible ? "visible" : "none");
@@ -580,7 +609,128 @@ map.on("load", async () => {
       recomputeHeatmap();
     }
   });
+
+  await handleDeepLink({ stores, housing, applyStoresFilter, applyHousingFilter });
 });
+
+// --- Map deep links ----------------------------------------------------
+// The opportunity-ranking pages (opportunity.html, opportunity_tracts.html)
+// link a row here as index.html?type=housing&source=..&source_id=.. (or
+// type=stores, or type=tract&geoid=..) so clicking a row jumps straight
+// to that point on the map instead of leaving you to hunt for it.
+async function handleDeepLink({ stores, housing, applyStoresFilter, applyHousingFilter }) {
+  const params = new URLSearchParams(window.location.search);
+  const type = params.get("type");
+  if (!type) return;
+
+  if (type === "stores" || type === "housing") {
+    const source = params.get("source");
+    const sourceId = params.get("source_id");
+    const dataset = type === "stores" ? stores : housing;
+    const feature = dataset.features.find(
+      (f) => f.properties.source === source && f.properties.source_id === sourceId
+    );
+    if (!feature) return;
+
+    // Isolate to just the target's own category — not only does this
+    // guarantee it's visible, it also means arriving from a list row
+    // shows just that one category on the map instead of everything.
+    const typeField = type === "stores" ? "store_type" : "property_type";
+    document.querySelectorAll(`.cat-checkbox[data-group="${type}"]`).forEach((cb) => {
+      cb.checked = cb.dataset.category === feature.properties[typeField];
+    });
+    syncParentCheckbox(type);
+    const refresh = type === "stores" ? applyStoresFilter : applyHousingFilter;
+    if (type === "housing") document.getElementById("min-units").value = "";
+    refresh();
+
+    map.jumpTo({ center: feature.geometry.coordinates, zoom: 16 });
+    openFeaturePopup(type, feature, dataset, refresh);
+  } else if (type === "tract") {
+    const geoid = params.get("geoid");
+    const tracts = await loadGeoJSON("data/tracts.geojson");
+    const feature = tracts.features.find((f) => f.properties.tract_geoid === geoid);
+    if (feature) showTractHighlight(feature);
+  }
+}
+
+// A tract has no boundary polygon in this project (see README) — only a
+// centroid and land area. The dashed circle is an honest approximation
+// sized from that real land area (radius = sqrt(land_sqmi / pi)), not a
+// claim about the tract's actual (usually irregular) shape.
+function makeCirclePolygon(lat, lon, radiusMiles, points = 64) {
+  const milesPerDegLat = 69.05;
+  const coords = [];
+  for (let i = 0; i <= points; i++) {
+    const angle = (i / points) * 2 * Math.PI;
+    const dLat = ((radiusMiles * Math.sin(angle)) / milesPerDegLat);
+    const dLon = (radiusMiles * Math.cos(angle)) / (milesPerDegLat * Math.cos((lat * Math.PI) / 180));
+    coords.push([lon + dLon, lat + dLat]);
+  }
+  return { type: "Polygon", coordinates: [coords] };
+}
+
+function tractPopupHTML(props) {
+  const rows = [];
+  if (props.population != null) rows.push(`<p><strong>Population:</strong> ${props.population.toLocaleString()}</p>`);
+  if (props.land_sqmi != null) rows.push(`<p><strong>Land area:</strong> ${props.land_sqmi.toFixed(1)} sq mi</p>`);
+  if (props.median_household_income != null)
+    rows.push(`<p><strong>Median income:</strong> $${Math.round(props.median_household_income).toLocaleString()}</p>`);
+  if (props.poverty_count != null && props.poverty_universe)
+    rows.push(`<p><strong>Poverty rate:</strong> ${((props.poverty_count / props.poverty_universe) * 100).toFixed(0)}%</p>`);
+  if (props.snap_households != null && props.snap_universe)
+    rows.push(`<p><strong>SNAP rate:</strong> ${((props.snap_households / props.snap_universe) * 100).toFixed(0)}%</p>`);
+  if (props.pct_low_access_half_mile != null)
+    rows.push(`<p><strong>USDA low-access:</strong> ${props.pct_low_access_half_mile.toFixed(0)}%</p>`);
+
+  return `
+    <h3>Tract ${props.tract_geoid}</h3>
+    ${rows.join("")}
+    <p style="font-size:11px; color:var(--ink-secondary); margin-top:6px;">
+      Dashed circle is an approximate size guide from land area, not the tract's real boundary.
+    </p>
+  `;
+}
+
+function showTractHighlight(feature) {
+  const [lon, lat] = feature.geometry.coordinates;
+  const radiusMiles = feature.properties.land_sqmi ? Math.sqrt(feature.properties.land_sqmi / Math.PI) : 0.5;
+  const circleFeature = { type: "Feature", geometry: makeCirclePolygon(lat, lon, radiusMiles), properties: {} };
+
+  if (map.getSource("tract-highlight-circle")) {
+    map.getSource("tract-highlight-circle").setData(circleFeature);
+    map.getSource("tract-highlight-point").setData(feature);
+  } else {
+    map.addSource("tract-highlight-circle", { type: "geojson", data: circleFeature });
+    map.addLayer({
+      id: "tract-highlight-fill",
+      type: "fill",
+      source: "tract-highlight-circle",
+      paint: { "fill-color": "#eb6834", "fill-opacity": 0.08 },
+    });
+    map.addLayer({
+      id: "tract-highlight-line",
+      type: "line",
+      source: "tract-highlight-circle",
+      paint: { "line-color": "#eb6834", "line-width": 2, "line-dasharray": [2, 2] },
+    });
+
+    map.addSource("tract-highlight-point", { type: "geojson", data: feature });
+    map.addLayer({
+      id: "tract-highlight-point-layer",
+      type: "circle",
+      source: "tract-highlight-point",
+      paint: { "circle-radius": 8, "circle-color": "#eb6834", "circle-stroke-width": 2, "circle-stroke-color": "#fcfcfb" },
+    });
+
+    map.on("click", "tract-highlight-point-layer", (e) => {
+      new maplibregl.Popup().setLngLat(e.features[0].geometry.coordinates).setHTML(tractPopupHTML(e.features[0].properties)).addTo(map);
+    });
+  }
+
+  map.jumpTo({ center: [lon, lat], zoom: 12 });
+  new maplibregl.Popup().setLngLat([lon, lat]).setHTML(tractPopupHTML(feature.properties)).addTo(map);
+}
 </script>
 </body>
 </html>

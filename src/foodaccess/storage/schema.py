@@ -68,6 +68,15 @@ CREATE TABLE IF NOT EXISTS food_access_atlas (
     PRIMARY KEY (tract_geoid, year, source)
 );
 
+CREATE TABLE IF NOT EXISTS tract_geometry (
+    tract_geoid  TEXT NOT NULL,
+    centroid_lat REAL,
+    centroid_lon REAL,
+    land_sqmi    REAL,
+    fetched_at   TEXT NOT NULL,
+    PRIMARY KEY (tract_geoid)
+);
+
 CREATE TABLE IF NOT EXISTS food_insecurity_county (
     county_fips           TEXT NOT NULL,
     year                  INTEGER NOT NULL,
@@ -97,6 +106,7 @@ CREATE TABLE IF NOT EXISTS housing_properties (
     is_manually_edited INTEGER NOT NULL DEFAULT 0,
     is_deleted        INTEGER NOT NULL DEFAULT 0,
     edited_at         TEXT,
+    tract_geoid       TEXT,
     PRIMARY KEY (source, source_id)
 );
 """
@@ -113,4 +123,5 @@ MIGRATIONS = [
     ("housing_properties", "is_manually_edited", "INTEGER NOT NULL DEFAULT 0"),
     ("housing_properties", "is_deleted", "INTEGER NOT NULL DEFAULT 0"),
     ("housing_properties", "edited_at", "TEXT"),
+    ("housing_properties", "tract_geoid", "TEXT"),
 ]

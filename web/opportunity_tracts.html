@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DFW Tract Opportunity Ranking</title>
+<style>
+  :root {
+    --ink: #0b0b0b;
+    --ink-secondary: #52514e;
+    --surface: #fcfcfb;
+    --border: rgba(11,11,11,0.10);
+    --blue: #2a78d6;
+    --orange: #eb6834;
+    --aqua: #1baf7a;
+    --muted: #898781;
+  }
+  html, body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); background: var(--surface); }
+  .header {
+    position: sticky; top: 0; z-index: 1; background: var(--surface); border-bottom: 1px solid var(--border);
+    padding: 12px 20px; display: flex; align-items: center; gap: 16px;
+  }
+  .header h1 { font-size: 16px; margin: 0; }
+  .header a { font-size: 13px; color: var(--blue); text-decoration: none; }
+  .header a:hover { text-decoration: underline; }
+  .layout { display: flex; gap: 0; align-items: flex-start; }
+  .sliders {
+    width: 280px; flex-shrink: 0; padding: 16px 20px; border-right: 1px solid var(--border);
+    position: sticky; top: 49px; height: calc(100vh - 49px); overflow-y: auto; box-sizing: border-box;
+  }
+  .sliders h2 { font-size: 13px; margin: 0 0 4px; }
+  .sliders p.hint { font-size: 12px; color: var(--ink-secondary); margin: 0 0 16px; }
+  .slider-row { margin-bottom: 16px; }
+  .slider-row label { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 4px; }
+  .slider-row .weight-value { color: var(--ink-secondary); }
+  .slider-row input[type="range"] { width: 100%; }
+  .filter-note {
+    font-size: 12px; color: var(--ink-secondary); background: rgba(42,120,214,0.08);
+    border-radius: 6px; padding: 8px 10px; margin-bottom: 16px;
+  }
+  .list-container { flex: 1; padding: 8px 20px 40px; }
+  .count-line { font-size: 13px; color: var(--ink-secondary); margin: 8px 0 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; color: var(--ink-secondary); position: sticky; top: 49px; background: var(--surface); }
+  tr:hover td { background: rgba(11,11,11,0.02); }
+  tr[data-href] { cursor: pointer; }
+  .rank { color: var(--ink-secondary); width: 32px; }
+  .county-badge {
+    display: inline-block; font-size: 11px; padding: 2px 7px; border-radius: 10px; margin-bottom: 4px;
+    background: rgba(11,11,11,0.08); color: var(--ink-secondary);
+  }
+  .score-bar-track { width: 80px; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+  .score-bar-fill { height: 100%; background: var(--blue); }
+  .score-value { font-size: 11px; color: var(--ink-secondary); margin-top: 2px; }
+  .addr { color: var(--ink-secondary); font-size: 12px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>DFW Tract Opportunity Ranking</h1>
+  <a href="index.html">&larr; Back to map</a>
+  <a href="opportunity.html">Housing ranking &rarr;</a>
+</div>
+
+<div class="layout">
+  <div class="sliders">
+    <h2>Weight each factor</h2>
+    <p class="hint">Higher = matters more to the ranking. Re-ranks instantly.</p>
+    <div class="filter-note">
+      Ranks every DFW census tract by its centroid — independent of
+      whether any specific housing property sits there. For "which
+      existing complex needs help most," see the housing ranking instead.
+    </div>
+    <div id="slider-list"></div>
+  </div>
+
+  <div class="list-container">
+    <div class="count-line" id="count-line"></div>
+    <table>
+      <thead>
+        <tr>
+          <th class="rank">#</th>
+          <th>Tract</th>
+          <th>Population</th>
+          <th>Density</th>
+          <th>Distance to grocery/mass store</th>
+          <th>Tract context</th>
+          <th>Score</th>
+        </tr>
+      </thead>
+      <tbody id="list-body"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+// Same architecture as opportunity.html (housing ranking): raw values +
+// percentiles computed once at load, sliders only rerun the weighted sum
+// and sort. See that file for the fuller rationale — the short version is
+// percentile rank needs the whole eligible set, so it can't be a pure
+// per-row function in isolation, but everything downstream of the
+// once-built percentile table is instant, no server round-trip.
+//
+// "Density" (population / land_sqmi) replaces housing's "total units" as
+// the "how many people does this affect" factor — this project's very
+// first framing was "densely populated," and a raw population count
+// can't tell a dense urban tract from a sparse rural one of the same
+// population without land area, which tract_geometry.py now provides.
+const METRICS = [
+  { key: "distance", label: "Distance from grocery/mass store", higherIsBetter: true, default: 5 },
+  { key: "density", label: "Population density", higherIsBetter: true, default: 5 },
+  { key: "income", label: "Median income (lower = more need)", higherIsBetter: false, default: 5 },
+  { key: "poverty", label: "Poverty rate", higherIsBetter: true, default: 5 },
+  { key: "snap", label: "SNAP participation rate", higherIsBetter: true, default: 5 },
+  { key: "lowAccess", label: "USDA low-access rate", higherIsBetter: true, default: 5 },
+];
+
+// FIPS -> name, matching config/settings.py's DFW_COUNTY_FIPS (duplicated
+// here since this is a static page with no access to Python config).
+const COUNTY_NAMES = {
+  "48085": "Collin", "48113": "Dallas", "48121": "Denton", "48139": "Ellis",
+  "48221": "Hood", "48231": "Hunt", "48251": "Johnson", "48257": "Kaufman",
+  "48367": "Parker", "48397": "Rockwall", "48439": "Tarrant", "48497": "Wise",
+};
+
+function haversineMiles(lat1, lon1, lat2, lon2) {
+  const R = 3958.8;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+// Brute-force nearest-store search — ~1,718 tracts x ~1,300 grocery/mass
+// stores is a couple million haversine calls, well under a second in JS,
+// same reasoning as the housing ranking page. Runs once at load.
+function nearestStoreMiles(lat, lon, stores) {
+  let best = Infinity;
+  for (const s of stores) {
+    const d = haversineMiles(lat, lon, s.lat, s.lon);
+    if (d < best) best = d;
+  }
+  return best;
+}
+
+function computeRawMetrics(features, stores) {
+  for (const f of features) {
+    const p = f.properties;
+    const [lon, lat] = f.geometry.coordinates;
+    p._distance = nearestStoreMiles(lat, lon, stores);
+    p._density = p.population != null && p.land_sqmi ? p.population / p.land_sqmi : null;
+    p._income = p.median_household_income;
+    p._poverty = p.poverty_count != null && p.poverty_universe ? p.poverty_count / p.poverty_universe : null;
+    p._snap = p.snap_households != null && p.snap_universe ? p.snap_households / p.snap_universe : null;
+    p._lowAccess = p.pct_low_access_half_mile;
+  }
+}
+
+// A tract missing a given raw value gets a neutral 0.5 percentile for
+// that metric, same convention as the housing ranking page.
+function assignPercentiles(features, rawKey, pctKey, higherIsBetter) {
+  const withValue = features.filter((f) => f.properties[rawKey] != null && isFinite(f.properties[rawKey]));
+  withValue.sort((a, b) => a.properties[rawKey] - b.properties[rawKey]);
+  const n = withValue.length;
+  withValue.forEach((f, i) => {
+    const rank = n <= 1 ? 0.5 : i / (n - 1);
+    f.properties[pctKey] = higherIsBetter ? rank : 1 - rank;
+  });
+  for (const f of features) {
+    if (f.properties[rawKey] == null || !isFinite(f.properties[rawKey])) {
+      f.properties[pctKey] = 0.5;
+    }
+  }
+}
+
+function computeScore(feature, weights) {
+  return METRICS.reduce((sum, m) => sum + weights[m.key] * feature.properties[`_pct_${m.key}`], 0);
+}
+
+function readWeights() {
+  const weights = {};
+  for (const m of METRICS) {
+    weights[m.key] = Number(document.getElementById(`slider-${m.key}`).value);
+  }
+  return weights;
+}
+
+function renderList(sortedFeatures) {
+  const rows = sortedFeatures
+    .map((f, i) => {
+      const p = f.properties;
+      const maxScore = METRICS.reduce((sum, m) => sum + Number(document.getElementById(`slider-${m.key}`).value), 0);
+      const scorePct = maxScore > 0 ? Math.round((p._score / maxScore) * 100) : 0;
+      const countyName = COUNTY_NAMES[p.tract_geoid.slice(0, 5)] || p.tract_geoid.slice(0, 5);
+      const tractBits = [];
+      if (p.median_household_income != null) tractBits.push(`Median income $${Math.round(p.median_household_income).toLocaleString()}`);
+      if (p._poverty != null) tractBits.push(`Poverty ${(p._poverty * 100).toFixed(0)}%`);
+      if (p._snap != null) tractBits.push(`SNAP ${(p._snap * 100).toFixed(0)}%`);
+      if (p.pct_low_access_half_mile != null) tractBits.push(`USDA low-access ${p.pct_low_access_half_mile.toFixed(0)}%`);
+
+      const mapUrl = `index.html?type=tract&geoid=${encodeURIComponent(p.tract_geoid)}`;
+
+      return `
+        <tr data-href="${mapUrl}">
+          <td class="rank">${i + 1}</td>
+          <td>
+            <div class="county-badge">${countyName} County</div>
+            <div><strong>Tract ${p.tract_geoid}</strong></div>
+            <div class="addr">${p.land_sqmi != null ? p.land_sqmi.toFixed(1) + " sq mi" : ""}</div>
+          </td>
+          <td>${p.population != null ? p.population.toLocaleString() : "—"}</td>
+          <td>${isFinite(p._density) ? Math.round(p._density).toLocaleString() + "/sq mi" : "—"}</td>
+          <td>${isFinite(p._distance) ? p._distance.toFixed(1) + " mi" : "—"}</td>
+          <td class="addr">${tractBits.join(" &middot; ") || "—"}</td>
+          <td>
+            <div class="score-bar-track"><div class="score-bar-fill" style="width:${scorePct}%"></div></div>
+            <div class="score-value">${p._score.toFixed(2)}</div>
+          </td>
+        </tr>
+      `;
+    })
+    .join("");
+  document.getElementById("list-body").innerHTML = rows;
+}
+
+function rerank(features) {
+  const weights = readWeights();
+  for (const f of features) {
+    f.properties._score = computeScore(f, weights);
+  }
+  const sorted = [...features].sort((a, b) => b.properties._score - a.properties._score);
+  renderList(sorted);
+}
+
+function buildSliders(onChange) {
+  const container = document.getElementById("slider-list");
+  container.innerHTML = METRICS.map(
+    (m) => `
+      <div class="slider-row">
+        <label>${m.label}<span class="weight-value" id="weight-${m.key}">${m.default}</span></label>
+        <input type="range" id="slider-${m.key}" min="0" max="10" step="1" value="${m.default}">
+      </div>
+    `
+  ).join("");
+
+  for (const m of METRICS) {
+    const slider = document.getElementById(`slider-${m.key}`);
+    slider.addEventListener("input", () => {
+      document.getElementById(`weight-${m.key}`).textContent = slider.value;
+      onChange();
+    });
+  }
+}
+
+async function loadGeoJSON(url) {
+  const res = await fetch(url);
+  return res.json();
+}
+
+// Event delegation on the tbody, not a per-row listener — rows are
+// replaced wholesale on every rerank(), so a listener attached directly
+// to a <tr> would be gone after the very next slider move.
+document.getElementById("list-body").addEventListener("click", (e) => {
+  const row = e.target.closest("tr[data-href]");
+  if (row) window.location.href = row.dataset.href;
+});
+
+(async function init() {
+  const [tracts, stores] = await Promise.all([
+    loadGeoJSON("data/tracts.geojson"),
+    loadGeoJSON("data/food_stores.geojson"),
+  ]);
+
+  const features = tracts.features;
+  const foodStoreCoords = stores.features
+    .filter((f) => ["grocery", "mass_merchandiser"].includes(f.properties.store_type))
+    .map((f) => ({ lon: f.geometry.coordinates[0], lat: f.geometry.coordinates[1] }));
+
+  computeRawMetrics(features, foodStoreCoords);
+  assignPercentiles(features, "_distance", "_pct_distance", true);
+  assignPercentiles(features, "_density", "_pct_density", true);
+  assignPercentiles(features, "_income", "_pct_income", false);
+  assignPercentiles(features, "_poverty", "_pct_poverty", true);
+  assignPercentiles(features, "_snap", "_pct_snap", true);
+  assignPercentiles(features, "_lowAccess", "_pct_lowAccess", true);
+
+  document.getElementById("count-line").textContent = `${features.length.toLocaleString()} DFW-metro census tracts ranked`;
+
+  buildSliders(() => rerank(features));
+  rerank(features);
+})();
+</script>
+</body>
+</html>

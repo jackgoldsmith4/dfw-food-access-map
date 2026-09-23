@@ -83,7 +83,12 @@ hides points, so cluster counts stay accurate to what's actually checked.
 A "Min. units" number field in the Housing section additionally hides
 properties with a known unit count below that value (properties with an
 *unknown* unit count — most CAD-parcel-sourced ones — are kept rather
-than hidden, since we can't tell whether they'd pass). Re-run `export`
+than hidden, since we can't tell whether they'd pass). A "Search by
+name" box above both layers filters either one to points whose name
+contains the search text (case-insensitive) — typing "tom thumb" leaves
+only Tom Thumb stores on the map; an unnamed point can never match a
+non-empty search, so it drops out too. Combines with the category
+checkboxes and Min. units, not a replacement for them. Re-run `export`
 any time the underlying data changes and refresh the page; no server
 restart needed.
 
@@ -119,11 +124,104 @@ for example, visibly grows the red zones since those stores stop
 counting. It sits below the store/housing pins in the paint order so
 they stay visible and clickable on top of it.
 
-This is a first pass focused on just seeing the collected data on a map —
-no composite "opportunity score" yet, no choropleth (that needs census
-tract boundary geometry, which isn't pulled yet), no search. The two
-point layers were the only things that needed real coordinates already
-in hand; the heatmap is the first derived/computed layer.
+No choropleth yet (that needs census tract *boundary geometry*, which
+isn't pulled — `tract_geoid` and each tract's centroid, via
+`geocoding/tract_lookup.py` and `pipelines/population/tract_geometry.py`,
+are enough to join and rank tract-level data but not to draw tract
+shapes). The heatmap and the two opportunity rankings
+(below) are the derived/computed layers built on top of the raw point
+data so far.
+
+### Housing opportunity ranking
+
+"View housing opportunity ranking" (top of the map panel) opens
+`opportunity.html` — a ranked list of housing properties, for deciding
+where improved food access would matter most.
+
+`market_rate` properties are excluded entirely, not scored — only
+`public_housing`, `subsidized_multifamily`, and `lihtc` are ranked
+(~2,100 properties). Each is scored on six factors, every one converted
+to a **percentile rank** (0-1) across that eligible set rather than raw
+min-max scaling, so a handful of outlier mega-complexes can't compress
+everyone else's score toward one end of the scale:
+
+1. Distance to the nearest grocery/mass-merchandiser store (further =
+   higher opportunity) — *all* such stores count here, not just
+   whichever categories happen to be checked on the main map.
+2. Total units (more units = higher opportunity — more households
+   affected by fixing this one location).
+3. Tract median household income (lower = higher opportunity).
+4. Tract poverty rate.
+5. Tract SNAP participation rate.
+6. Tract USDA low-access rate (SRAM's own `pct_low_access_half_mile` —
+   a direct cross-check against this project's own distance metric,
+   from an entirely different measurement approach).
+
+A slider per factor (0-10, default 5 = equal weighting) lets you
+reweight live: `score = Σ(slider_weight × percentile)`, recomputed and
+re-sorted instantly on every drag. This works client-side with no
+server round-trip because percentiles and raw values (distance, tract
+data) are computed once at page load — only the weighted sum and sort
+need to rerun per slider move. `is_senior_housing` shows as a badge on
+each row but deliberately isn't part of the score.
+
+Deliberately left out of the score: county-level Feeding America food
+insecurity (only 12 distinct values across the whole metro — doesn't
+differentiate between properties in the same county) and CDC PLACES
+obesity rate (a downstream health outcome shaped by far more than food
+access alone).
+
+### Tract opportunity ranking
+
+"View tract opportunity ranking" opens `opportunity_tracts.html` — the
+same idea as the housing ranking, but for a whole census tract
+regardless of whether any specific housing property sits there. This is
+the page that answers this project's original framing most directly:
+not "which existing complex needs help" but "which *area* is
+underserved" — relevant beyond just where subsidized housing happens to
+already exist (e.g. for deciding where a new store would do the most
+good).
+
+All 1,718 DFW-metro tracts are ranked (no filter — every tract is
+eligible, unlike housing's market-rate exclusion) by centroid, on the
+same percentile-rank/slider-weighted design as the housing ranking:
+
+1. Distance from the tract's centroid to the nearest grocery/mass-
+   merchandiser store.
+2. **Population density** (`total_population / land_sqmi`) — not just
+   total population, since "densely populated" was part of this
+   project's brief from the very first data-source research pass, and a
+   raw population count can't distinguish a dense urban tract from a
+   sparse rural one of the same population. Land area comes from
+   `pipelines/population/tract_geometry.py`, pulled from the Census
+   Bureau's 2020 Gazetteer file (also the source of each tract's
+   centroid) — a different Census product from the Bulk Geocoder used
+   elsewhere, since a Gazetteer file already has every tract's centroid
+   and land area in one small bulk download rather than needing a
+   one-at-a-time API call per tract.
+3. Median household income (lower = higher opportunity).
+4. Poverty rate.
+5. SNAP participation rate.
+6. USDA low-access rate.
+
+Same scoring mechanics as the housing page (percentile rank per metric,
+slider-weighted sum, instant client-side re-rank) — see that section
+above for the fuller rationale.
+
+### Jumping from a ranked list to the map
+
+Clicking any row on either ranking page opens the map centered on that
+exact property or tract (`index.html?type=housing&source=..&source_id=..`,
+`type=stores`, or `type=tract&geoid=..`). For a property, the map also
+isolates its category — checking only that one and unchecking the rest
+in its group — and clears the Min. units filter, so the target is never
+hidden by (or lost among) whatever was checked before, then opens the
+same edit/delete popup a real click would. A tract has no boundary
+polygon in this project (only a centroid and land area — see above), so
+it's shown as a marker at the
+centroid plus a dashed circle sized from land area
+(`radius = sqrt(land_sqmi / π)`) — an honest size guide, not a claim
+about the tract's actual, usually irregular, shape.
 
 ## Source status
 
@@ -139,6 +237,7 @@ its pipeline is fully implemented and tested against the real file.
 | Food stores | OpenStreetMap (Overpass) | Fully implemented, no config needed |
 | Food stores | Cross-source dedup (`dedupe.py`) | **Fully implemented and verified** (2026-09) — the same physical store legitimately appears in both sources sometimes (e.g. Whole Foods, Kroger), and USDA's own store-type classification is occasionally wrong (that Whole Foods was "Super Store" -> mass_merchandiser in USDA's data). Matches by proximity + name overlap, keeps the USDA row (for its `snap_authorized`/`county_fips`) but applies OSM's classification. Match distance is per store format, not one constant — 500m for grocery/mass-merchandiser (sparse; a real Kroger was geocoded 257m apart between sources) but a tighter 150m for convenience stores (dense enough that a wide radius risks merging two distinct nearby locations of the same chain — confirmed this pattern in real data before narrowing it). 1,264 duplicates merged in a real run. |
 | Population | Census ACS 5-Year | Fully implemented; **requires** `CENSUS_API_KEY` in `.env` (verified 2026-09 — api.census.gov now rejects unauthenticated requests) |
+| Population | Tract geometry (`population/tract_geometry.py`) | **Fully implemented and verified** (2026-09) — Census Bureau 2020 Gazetteer file for Texas, no key, no batching needed (one small plain-text download). All 1,718 DFW tracts matched, giving each a centroid (for the tract opportunity ranking's distance metric) and land area (for population density). |
 | Population | CDC PLACES (obesity) | Fully implemented |
 | Population | USDA SNAP-authorized Retailer Access Map (SRAM) | **Fully implemented and verified** (2026-09) — USDA renamed the classic Atlas to "LRAM" (now stale, 2019 vintage) and introduced SRAM (2025 vintage) as the current product; this pipeline uses SRAM's driving-distance access measures instead. 1,718 real DFW tracts parsed, 89 flagged low-income-low-access. |
 | Population | Feeding America (food insecurity) | **Fully implemented and verified** (2026-09) — found their interactive map's own undocumented JSON endpoint (`map.feedingamerica.org/mapdata`), which needs no auth/form. All 12 DFW counties captured; Dallas highest at 19.2%, Rockwall lowest at 10.8% |
@@ -151,6 +250,7 @@ its pipeline is fully implemented and tested against the real file.
 | Housing | Denton County parcels (`denton_cad.py`) | **Fully implemented and verified** (2026-09) — 4,223 multifamily parcels (stateCodes B1/B2) from Denton County's GIS ArcGIS layer. **The only one of the four with real coordinates already included** (parcel-polygon vertex-average), since appraisal data is pre-joined to geometry here. No unit-count field. |
 | Housing | Cross-source dedup (`housing/dedupe.py`) | **Fully implemented and verified** (2026-09) — the same complex often gets picked up by a county CAD's generic tax-roll parcel *and* an authoritative registry (HUD LIHTC, TDHCA HTC, HUD's multifamily-assisted list) that also covers it; CAD's `market_rate` is a hard-coded default with no real subsidy-status data behind it, so it always loses to whichever authoritative source matches. Real case that prompted this: 1414 Belleview in Dallas is correctly `lihtc` per HUD's LIHTC database, but Dallas CAD also produced a `market_rate` row ~22m away for the same building. Matches form connected components, not just pairs (one real case: a single hud_lihtc row matched three separate hud_multifamily_assisted rows for the same property). **Deliberately excludes `hud_public_housing`** — its rows are almost always one building within a larger development (unit counts are overwhelmingly 1-6), not the whole complex, so merging them against a project-level CAD/LIHTC/TDHCA row would silently delete real, distinct buildings. 454 duplicates merged into 328 survivors in a real run. |
 | Geocoding | Census Bulk Geocoder (`geocoding/census_geocoder.py`) | **Fully implemented and verified** (2026-09) — free, no key, batches up to 10,000 addresses per request. Tested end-to-end against real Dallas CAD rows: 25/25 matched. Real match rates won't be 100% (a legitimate apartment address failed to match in testing) — unmatched addresses are logged, not silently dropped, and simply keep `latitude`/`longitude` as `NULL` for a future retry. |
+| Geocoding | Housing-point-to-tract lookup (`geocoding/tract_lookup.py`) | **Fully implemented and verified** (2026-09) — same free Census Geocoder, but its per-coordinate `/geographies/coordinates` endpoint (no bulk form exists for coordinates), used to fill `housing_properties.tract_geoid` for the opportunity score's tract-level context. One-time backfill of all 40,920 rows: **100% matched, 0 not found** — cleaner than the address geocoder's match rate, since it isn't dependent on address-string quality. Run with a small thread pool (8 workers) since it's a real ~4.7-hour job at one request per row otherwise; not included in `cli.py`'s `all` command on purpose (see `BACKGROUND_ONLY`), since every run after the first backfill only looks up newly-added rows and finishes in seconds. |
 
 ## Manual download required: HUD LIHTC
 
