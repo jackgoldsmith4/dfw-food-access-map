@@ -94,6 +94,15 @@ restart needed.
 
 ### Manual editing
 
+A housing point's popup shows its joined tract-level fields formatted
+for reading, not raw joined values — median income as `$81,969`, poverty
+and SNAP rates as percentages (derived client-side from the
+count/universe pairs `export/geojson.py` provides, not stored as a rate
+directly), and the tract's own GEOID as "Census tract". This is
+`popupViewHTML()`'s `FIELD_FORMATTERS`/`SKIP_FIELDS` in `index.html` — it
+only touches keys that exist on housing (`tract_*`); a store popup falls
+through to the same generic key-to-label rendering as before, unaffected.
+
 Clicking a point opens a popup with **Edit** and **Delete** buttons.
 Edit changes the name and category (store_type/property_type); Delete
 soft-removes the point from the map. Both call `webapp.py`'s API, which
@@ -112,6 +121,26 @@ through `upsert_records()`, excludes manually-edited rows from its
 matching in the same way. `export`'s query also excludes
 `is_deleted = 1` rows outright, so a deletion disappears from the map
 on the next export/refresh.
+
+### Outreach tracking
+
+Below Edit/Delete, a housing property's popup has a **Reached out**
+checkbox (auto-saves on toggle) and a **Notes** button (opens a free-text
+editor in the same popup). Both call `/api/housing/track`, a separate
+endpoint from `/edit`/`/delete` — deliberately: marking outreach status
+isn't a data correction, so it never sets `is_manually_edited`. No
+pipeline ever writes `reached_out`/`notes` (they're not part of any
+`HousingProperty` record), so `upsert_records()`'s dynamic column list
+never touches them regardless of that flag — they're already immune to
+being overwritten by a pipeline re-run without needing the same
+protection edits rely on.
+
+"View outreach tracker" opens `outreach.html`, listing every property
+currently marked reached-out, with its notes, a **View on map** button
+(the same `index.html?type=housing&source=..&source_id=..` deep link the
+ranking pages use), an **Edit notes** button (a modal, same data as the
+map popup's), and a **Remove** button that unmarks `reached_out` without
+erasing its notes — so re-adding it later doesn't lose that history.
 
 A "Toggle food access heatmap" checkbox (off by default) overlays every
 location's straight-line distance to the nearest *currently-checked* food
@@ -163,7 +192,11 @@ re-sorted instantly on every drag. This works client-side with no
 server round-trip because percentiles and raw values (distance, tract
 data) are computed once at page load — only the weighted sum and sort
 need to rerun per slider move. `is_senior_housing` shows as a badge on
-each row but deliberately isn't part of the score.
+each row but deliberately isn't part of the score — a "Senior housing
+only" checkbox filters the displayed rows to it instead, the same
+"narrow the view, don't rescale the ranking" convention as the tract
+page's search box: scores/percentiles are always computed against the
+full eligible set regardless of the checkbox.
 
 Deliberately left out of the score: county-level Feeding America food
 insecurity (only 12 distinct values across the whole metro — doesn't
@@ -208,6 +241,14 @@ Same scoring mechanics as the housing page (percentile rank per metric,
 slider-weighted sum, instant client-side re-rank) — see that section
 above for the fuller rationale.
 
+A "Search by tract number or county" box filters which tracts are
+*displayed*, case-insensitive substring match against the GEOID or its
+county name (a tract has no "name" the way a store/housing property
+does). Scores and percentiles are always computed against all 1,718
+tracts regardless of the search box, so a tract's ranking reflects its
+standing across the whole metro — search only narrows the view, the same
+way the map's category checkboxes filter without rescaling anything.
+
 ### Jumping from a ranked list to the map
 
 Clicking any row on either ranking page opens the map centered on that
@@ -241,9 +282,9 @@ its pipeline is fully implemented and tested against the real file.
 | Population | CDC PLACES (obesity) | Fully implemented |
 | Population | USDA SNAP-authorized Retailer Access Map (SRAM) | **Fully implemented and verified** (2026-09) — USDA renamed the classic Atlas to "LRAM" (now stale, 2019 vintage) and introduced SRAM (2025 vintage) as the current product; this pipeline uses SRAM's driving-distance access measures instead. 1,718 real DFW tracts parsed, 89 flagged low-income-low-access. |
 | Population | Feeding America (food insecurity) | **Fully implemented and verified** (2026-09) — found their interactive map's own undocumented JSON endpoint (`map.feedingamerica.org/mapdata`), which needs no auth/form. All 12 DFW counties captured; Dallas highest at 19.2%, Rockwall lowest at 10.8% |
-| Housing | HUD Resource Locator (public housing + assisted multifamily) | **Fully implemented and verified** (2026-09) — 1,300 real DFW records (1,116 public housing buildings + 184 assisted multifamily properties), coordinates included, 52 flagged senior/disability housing |
-| Housing | HUD LIHTC database (`hud_lihtc.py`) | **Fully implemented and verified** (2026-09) against the real file — 485 real DFW properties, 0 missing coordinates, 140 flagged senior housing. **Requires a one-time manual download** (huduser.gov blocks all automated access — see below); also required switching to the `python-calamine` engine since `openpyxl` can't parse HUD's export (it contains an invalid OOXML attribute). |
-| Housing | TDHCA HTC Property Inventory (`tdhca_htc.py`) | **Fully implemented and verified** (2026-09) — clean, stable Excel file, no bot-protection. 616 real DFW properties, 89% already geocoded by TDHCA directly, 174 flagged senior housing via a direct "Population Served" field |
+| Housing | HUD Resource Locator (public housing + assisted multifamily) | **Fully implemented and verified** (2026-09). `is_senior_housing` was fixed 2026-09-24: previously derived from `IS_202_811_IND`, a combined program-eligibility flag that conflates Section 202 (elderly) with Section 811 (people *under* 62 with disabilities) — confirmed real DFW cases (e.g. "Accessible Residences," 100% disabled residents) were wrongly flagged senior by that alone. Now uses `PCT_AGE62PLUS`, the actual measured elderly share (≥80% = senior, matching the Housing for Older Persons Act's legal threshold; real bimodal distribution — 25 properties under 20% elderly, 47 over 95%) for both `hud_public_housing` (previously never set at all) and `hud_multifamily_assisted`. Left `None` rather than guessed when no percentage is on file. |
+| Housing | HUD LIHTC database (`hud_lihtc.py`) | **Fully implemented and verified** (2026-09) against the real file. **Requires a one-time manual download** (huduser.gov blocks all automated access — see below); also required switching to the `python-calamine` engine since `openpyxl` can't parse HUD's export (it contains an invalid OOXML attribute). `is_senior_housing` fixed 2026-09-24: HUD's own data dictionary defines `TRGT_ELD` as 1=Yes/2=No/0-or-blank=Not indicated, but the pipeline was treating any non-1 value (including blank) as "No" — nearly half of all national LIHTC records have no value here at all, and were being confidently asserted as not-senior instead of unknown. |
+| Housing | TDHCA HTC Property Inventory (`tdhca_htc.py`) | **Fully implemented and verified** (2026-09) — clean, stable Excel file, no bot-protection, updated monthly. `is_senior_housing` uses the direct "Population Served" field — more reliable than HUD's inferred program flags since TDHCA states the target population outright. Broadened 2026-09-24 to also count "Elderly Limitation"/"Elderly Preference" (not just an exact "Elderly" match) and to leave missing values unknown rather than "not senior." |
 | Housing | Dallas CAD parcels (`dallas_cad.py`) | **Fully implemented and verified** (2026-09) — 20,798 multifamily parcels / ~361k units from DCAD's linked CSVs (SPTD B11/B12). No coordinates in the bulk export — addresses are captured for the geocoding pipeline. |
 | Housing | Tarrant CAD parcels (`tarrant_cad.py`) | **Fully implemented and verified** (2026-09) — 11,063 multifamily parcels from TAD's pipe-delimited export (Property_Class B/BC). No unit-count field and no zip code exist in this source at all (confirmed, not a parsing gap). No coordinates. |
 | Housing | Collin CAD parcels (`collin_cad.py`) | **Fully implemented and verified** (2026-09) — 4,577 multifamily parcels queried live from Collin's Socrata open-data API (propCategoryCode='B'), no file download needed. Full address+zip; unit count present for ~1 in 6 parcels. No coordinates. |

@@ -17,8 +17,18 @@ substantially, so expect the same physical property to appear from both
 sources under different source_id values; deduplicating across sources by
 address/name is a later data-quality step, not done here.
 
-Population Served ("Elderly" vs "General" etc.) is used as a direct
-senior-housing flag — more reliable than HUD's inferred 202/811 indicator.
+Population Served is used as a direct senior-housing flag — more
+reliable than HUD's inferred 202/811 indicator (see hud_resource_locator.py)
+since TDHCA states the target population outright rather than inferring
+it from overlapping program codes. Verified the real category set
+against a real download (2026-09, statewide): General (2285), Elderly
+(874), Elderly Limitation (57), Supportive Housing (43), Elderly
+Preference (28) — "Elderly Limitation" and "Elderly Preference" are also
+age-restricted-adjacent and are now treated as senior, not just an exact
+"Elderly" match. Missing "Population Served" is left unknown (None), not
+collapsed into "not senior" — a bug the first version of this check had
+(`value == "Elderly"` silently evaluates to `False` when `value` is
+`None`, not `None`).
 """
 from __future__ import annotations
 
@@ -48,6 +58,16 @@ def _clean(value):
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return None
     return value
+
+
+SENIOR_POPULATION_SERVED = {"Elderly", "Elderly Limitation", "Elderly Preference"}
+
+
+def _is_senior_housing(population_served) -> bool | None:
+    population_served = _clean(population_served)
+    if population_served is None:
+        return None
+    return population_served.strip() in SENIOR_POPULATION_SERVED
 
 
 def _to_int(value) -> int | None:
@@ -90,7 +110,7 @@ def transform(raw_path: Path) -> list[HousingProperty]:
                 latitude=float(latitude) if latitude is not None else None,
                 longitude=float(longitude) if longitude is not None else None,
                 total_units=_to_int(row.get("Total Units")),
-                is_senior_housing=_clean(row.get("Population Served")) == "Elderly",
+                is_senior_housing=_is_senior_housing(row.get("Population Served")),
                 is_subsidized=True,
                 raw_json=json.dumps({k: str(v) for k, v in row.items() if _clean(v) is not None}),
             )

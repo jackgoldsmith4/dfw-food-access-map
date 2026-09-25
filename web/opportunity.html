@@ -79,6 +79,10 @@
       Only public housing, subsidized multifamily, and LIHTC properties are
       ranked — market-rate housing is excluded entirely, not scored.
     </div>
+    <label style="display:flex; align-items:center; gap:6px; font-size:13px; margin-bottom:16px;">
+      <input type="checkbox" id="senior-only">
+      Senior housing only
+    </label>
     <div id="slider-list"></div>
   </div>
 
@@ -100,14 +104,16 @@
   </div>
 </div>
 
+<script src="ranking.js"></script>
 <script>
 // --- Metric definitions -------------------------------------------------
 // Each metric's raw value is computed once per property at load time (see
 // computeRawMetrics). Percentiles are then computed once across the
-// eligible (non-market-rate) set (see assignPercentiles) — a property's
-// rank is relative to that whole set, not derivable from one row alone.
-// Moving a slider only reruns computeScore()+sort — no recomputation of
-// raw values or percentiles needed, so re-ranking is instant.
+// eligible (non-market-rate) set (see assignPercentiles, in ranking.js)
+// — a property's rank is relative to that whole set, not derivable from
+// one row alone. Moving a slider only reruns computeScore()+sort — no
+// recomputation of raw values or percentiles needed, so re-ranking is
+// instant.
 const METRICS = [
   { key: "distance", label: "Distance from grocery/mass store", higherIsBetter: true, default: 5 },
   { key: "units", label: "Total units", higherIsBetter: true, default: 5 },
@@ -116,28 +122,6 @@ const METRICS = [
   { key: "snap", label: "Tract SNAP participation rate", higherIsBetter: true, default: 5 },
   { key: "lowAccess", label: "Tract USDA low-access rate", higherIsBetter: true, default: 5 },
 ];
-
-function haversineMiles(lat1, lon1, lat2, lon2) {
-  const R = 3958.8;
-  const toRad = (d) => (d * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(a));
-}
-
-// Brute-force nearest-store search — ~2,100 eligible properties x ~1,300
-// grocery/mass stores is a few million haversine calls, well under a
-// second in JS. Runs once at load, not per slider move, so a spatial
-// index (like the main map's heatmap uses) isn't needed here.
-function nearestStoreMiles(lat, lon, stores) {
-  let best = Infinity;
-  for (const s of stores) {
-    const d = haversineMiles(lat, lon, s.lat, s.lon);
-    if (d < best) best = d;
-  }
-  return best;
-}
 
 function computeRawMetrics(features, stores) {
   for (const f of features) {
@@ -162,43 +146,19 @@ function computeRawMetrics(features, stores) {
 // that didn't join) gets a neutral 0.5 percentile for that metric —
 // consistent with how the main map's "Min. units" filter treats unknown
 // unit counts: unknown isn't penalized or rewarded, just left neutral.
-function assignPercentiles(features, rawKey, pctKey, higherIsBetter) {
-  const withValue = features.filter((f) => f.properties[rawKey] != null && isFinite(f.properties[rawKey]));
-  withValue.sort((a, b) => a.properties[rawKey] - b.properties[rawKey]);
-  const n = withValue.length;
-  withValue.forEach((f, i) => {
-    const rank = n <= 1 ? 0.5 : i / (n - 1);
-    f.properties[pctKey] = higherIsBetter ? rank : 1 - rank;
-  });
-  for (const f of features) {
-    if (f.properties[rawKey] == null || !isFinite(f.properties[rawKey])) {
-      f.properties[pctKey] = 0.5;
-    }
-  }
-}
-
-function computeScore(feature, weights) {
-  return METRICS.reduce((sum, m) => sum + weights[m.key] * feature.properties[`_pct_${m.key}`], 0);
-}
-
-function readWeights() {
-  const weights = {};
-  for (const m of METRICS) {
-    weights[m.key] = Number(document.getElementById(`slider-${m.key}`).value);
-  }
-  return weights;
-}
+// (assignPercentiles/computeScore/readWeights/buildSliders/loadGeoJSON,
+// and the list-body click delegation, live in ranking.js — identical
+// across both ranking pages.)
 
 function typeBadge(propertyType) {
   const labels = { public_housing: "Public housing", subsidized_multifamily: "Subsidized multifamily", lihtc: "LIHTC" };
   return `<span class="type-badge type-${propertyType}">${labels[propertyType] || propertyType}</span>`;
 }
 
-function renderList(sortedFeatures) {
+function renderList(sortedFeatures, maxScore) {
   const rows = sortedFeatures
     .map((f, i) => {
       const p = f.properties;
-      const maxScore = METRICS.reduce((sum, m) => sum + Number(document.getElementById(`slider-${m.key}`).value), 0);
       const scorePct = maxScore > 0 ? Math.round((p._score / maxScore) * 100) : 0;
       const tractBits = [];
       if (p.tract_median_household_income != null) tractBits.push(`Median income $${Math.round(p.tract_median_household_income).toLocaleString()}`);
@@ -233,45 +193,23 @@ function renderList(sortedFeatures) {
 
 function rerank(eligibleFeatures) {
   const weights = readWeights();
+  // Scored/percentile-ranked against the full eligible set regardless of
+  // the senior-only checkbox, so a property's score always reflects its
+  // standing among all ranked properties — the checkbox only narrows
+  // which rows are displayed, same convention as the tract page's search.
   for (const f of eligibleFeatures) {
     f.properties._score = computeScore(f, weights);
   }
-  const sorted = [...eligibleFeatures].sort((a, b) => b.properties._score - a.properties._score);
-  renderList(sorted);
+  const seniorOnly = document.getElementById("senior-only").checked;
+  const matching = seniorOnly ? eligibleFeatures.filter((f) => !!f.properties.is_senior_housing) : eligibleFeatures;
+  const sorted = [...matching].sort((a, b) => b.properties._score - a.properties._score);
+  const maxScore = Object.values(weights).reduce((sum, w) => sum + w, 0);
+  renderList(sorted, maxScore);
+  document.getElementById("count-line").textContent =
+    matching.length === eligibleFeatures.length
+      ? `${eligibleFeatures.length.toLocaleString()} public/subsidized/LIHTC properties ranked (market-rate excluded)`
+      : `${matching.length.toLocaleString()} of ${eligibleFeatures.length.toLocaleString()} properties shown (senior housing only)`;
 }
-
-function buildSliders(onChange) {
-  const container = document.getElementById("slider-list");
-  container.innerHTML = METRICS.map(
-    (m) => `
-      <div class="slider-row">
-        <label>${m.label}<span class="weight-value" id="weight-${m.key}">${m.default}</span></label>
-        <input type="range" id="slider-${m.key}" min="0" max="10" step="1" value="${m.default}">
-      </div>
-    `
-  ).join("");
-
-  for (const m of METRICS) {
-    const slider = document.getElementById(`slider-${m.key}`);
-    slider.addEventListener("input", () => {
-      document.getElementById(`weight-${m.key}`).textContent = slider.value;
-      onChange();
-    });
-  }
-}
-
-async function loadGeoJSON(url) {
-  const res = await fetch(url);
-  return res.json();
-}
-
-// Event delegation on the tbody, not a per-row listener — rows are
-// replaced wholesale on every rerank(), so a listener attached directly
-// to a <tr> would be gone after the very next slider move.
-document.getElementById("list-body").addEventListener("click", (e) => {
-  const row = e.target.closest("tr[data-href]");
-  if (row) window.location.href = row.dataset.href;
-});
 
 (async function init() {
   const [housing, stores] = await Promise.all([
@@ -292,10 +230,8 @@ document.getElementById("list-body").addEventListener("click", (e) => {
   assignPercentiles(eligibleFeatures, "_snap", "_pct_snap", true);
   assignPercentiles(eligibleFeatures, "_lowAccess", "_pct_lowAccess", true);
 
-  document.getElementById("count-line").textContent =
-    `${eligibleFeatures.length.toLocaleString()} public/subsidized/LIHTC properties ranked (market-rate excluded)`;
-
   buildSliders(() => rerank(eligibleFeatures));
+  document.getElementById("senior-only").addEventListener("change", () => rerank(eligibleFeatures));
   rerank(eligibleFeatures);
 })();
 </script>

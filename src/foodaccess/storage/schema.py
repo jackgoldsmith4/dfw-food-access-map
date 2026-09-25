@@ -107,6 +107,8 @@ CREATE TABLE IF NOT EXISTS housing_properties (
     is_deleted        INTEGER NOT NULL DEFAULT 0,
     edited_at         TEXT,
     tract_geoid       TEXT,
+    reached_out       INTEGER NOT NULL DEFAULT 0,
+    notes             TEXT,
     PRIMARY KEY (source, source_id)
 );
 """
@@ -124,4 +126,6 @@ MIGRATIONS = [
     ("housing_properties", "is_deleted", "INTEGER NOT NULL DEFAULT 0"),
     ("housing_properties", "edited_at", "TEXT"),
     ("housing_properties", "tract_geoid", "TEXT"),
+    ("housing_properties", "reached_out", "INTEGER NOT NULL DEFAULT 0"),
+    ("housing_properties", "notes", "TEXT"),
 ]

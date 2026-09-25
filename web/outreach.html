@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DFW Outreach Tracker</title>
+<style>
+  :root {
+    --ink: #0b0b0b;
+    --ink-secondary: #52514e;
+    --surface: #fcfcfb;
+    --border: rgba(11,11,11,0.10);
+    --blue: #2a78d6;
+    --orange: #eb6834;
+    --aqua: #1baf7a;
+    --muted: #898781;
+  }
+  html, body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); background: var(--surface); }
+  .header {
+    position: sticky; top: 0; z-index: 1; background: var(--surface); border-bottom: 1px solid var(--border);
+    padding: 12px 20px; display: flex; align-items: center; gap: 16px;
+  }
+  .header h1 { font-size: 16px; margin: 0; }
+  .header a { font-size: 13px; color: var(--blue); text-decoration: none; }
+  .header a:hover { text-decoration: underline; }
+  .list-container { padding: 8px 20px 40px; max-width: 900px; }
+  .count-line { font-size: 13px; color: var(--ink-secondary); margin: 8px 0 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; color: var(--ink-secondary); }
+  .addr { color: var(--ink-secondary); font-size: 12px; }
+  .type-badge {
+    display: inline-block; font-size: 11px; padding: 2px 7px; border-radius: 10px; color: white; white-space: nowrap;
+  }
+  .type-public_housing { background: var(--blue); }
+  .type-subsidized_multifamily { background: var(--orange); }
+  .type-lihtc { background: var(--aqua); }
+  .type-market_rate { background: var(--muted); }
+  .actions-cell { white-space: nowrap; }
+  .actions-cell button, .actions-cell a button {
+    font-size: 12px; padding: 3px 8px; margin-right: 4px; border: 1px solid var(--border); border-radius: 4px;
+    background: var(--surface); cursor: pointer;
+  }
+  .remove-btn { color: #b02a2a; border-color: rgba(176,42,42,0.35); }
+  .notes-modal-backdrop {
+    position: fixed; inset: 0; background: rgba(11,11,11,0.35);
+    display: flex; align-items: center; justify-content: center; z-index: 10;
+  }
+  .notes-modal {
+    background: var(--surface); border-radius: 8px; padding: 16px 20px; width: 420px; max-width: 90vw;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+  }
+  .notes-modal h3 { margin: 0 0 8px; font-size: 14px; }
+  .notes-modal textarea {
+    width: 100%; box-sizing: border-box; font-family: inherit; font-size: 13px; padding: 6px 8px;
+    border: 1px solid var(--border); border-radius: 4px;
+  }
+  .notes-modal .modal-actions { display: flex; gap: 6px; margin-top: 10px; }
+  .notes-modal .modal-actions button {
+    font-size: 12px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 4px;
+    background: var(--surface); cursor: pointer;
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>DFW Outreach Tracker</h1>
+  <a href="index.html">&larr; Back to map</a>
+</div>
+
+<div class="list-container">
+  <div class="count-line" id="count-line"></div>
+  <table>
+    <thead>
+      <tr>
+        <th>Property</th>
+        <th>Notes</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody id="list-body"></tbody>
+  </table>
+</div>
+
+<div id="notes-modal-root"></div>
+
+<script>
+// Properties marked "Reached out" from the map's housing popup (see
+// index.html's housingTrackingHTML/handleReachedOutToggle). This page is
+// purely a read/manage view over that same data — reached_out and notes
+// are set via the same /api/housing/track endpoint either place.
+function escapeHtml(s) {
+  return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function typeBadge(propertyType) {
+  const labels = {
+    public_housing: "Public housing", subsidized_multifamily: "Subsidized multifamily",
+    lihtc: "LIHTC", market_rate: "Market rate",
+  };
+  return `<span class="type-badge type-${propertyType}">${labels[propertyType] || propertyType}</span>`;
+}
+
+async function loadGeoJSON(url) {
+  const res = await fetch(url);
+  return res.json();
+}
+
+async function updateTracking(source, sourceId, fields) {
+  const res = await fetch("/api/housing/track", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ source, source_id: sourceId, ...fields }),
+  });
+  if (!res.ok) throw new Error(`update failed: ${res.status}`);
+}
+
+let trackedFeatures = [];
+
+function findFeature(source, sourceId) {
+  return trackedFeatures.find((f) => f.properties.source === source && f.properties.source_id === sourceId);
+}
+
+function render() {
+  document.getElementById("count-line").textContent =
+    trackedFeatures.length === 1 ? "1 property reached out to" : `${trackedFeatures.length.toLocaleString()} properties reached out to`;
+
+  if (trackedFeatures.length === 0) {
+    document.getElementById("list-body").innerHTML =
+      `<tr><td colspan="3" class="addr">Nothing here yet — check "Reached out" on a housing property's popup on the map to add it.</td></tr>`;
+    return;
+  }
+
+  const rows = trackedFeatures
+    .map((f) => {
+      const p = f.properties;
+      const mapUrl = `index.html?type=housing&source=${encodeURIComponent(p.source)}&source_id=${encodeURIComponent(p.source_id)}`;
+      const notesPreview = p.notes
+        ? escapeHtml(p.notes.length > 140 ? p.notes.slice(0, 140) + "…" : p.notes)
+        : '<span class="addr">No notes yet</span>';
+
+      return `
+        <tr data-source="${escapeHtml(p.source)}" data-source-id="${escapeHtml(p.source_id)}">
+          <td>
+            ${typeBadge(p.property_type)}
+            <div><strong>${escapeHtml(p.name || "(unnamed)")}</strong></div>
+            <div class="addr">${escapeHtml(p.address || "")}${p.city ? ", " + escapeHtml(p.city) : ""}</div>
+          </td>
+          <td style="max-width:280px;">${notesPreview}</td>
+          <td class="actions-cell">
+            <a href="${mapUrl}"><button type="button">View on map</button></a>
+            <button type="button" class="notes-btn">${p.notes ? "Edit notes" : "Add notes"}</button>
+            <button type="button" class="remove-btn">Remove</button>
+          </td>
+        </tr>
+      `;
+    })
+    .join("");
+  document.getElementById("list-body").innerHTML = rows;
+}
+
+function openNotesModal(feature) {
+  const root = document.getElementById("notes-modal-root");
+  root.innerHTML = `
+    <div class="notes-modal-backdrop">
+      <div class="notes-modal">
+        <h3>${escapeHtml(feature.properties.name || "(unnamed)")}</h3>
+        <textarea rows="8">${escapeHtml(feature.properties.notes)}</textarea>
+        <div class="modal-actions">
+          <button type="button" id="notes-save">Save</button>
+          <button type="button" id="notes-cancel">Cancel</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.getElementById("notes-cancel").addEventListener("click", () => {
+    root.innerHTML = "";
+  });
+  document.getElementById("notes-save").addEventListener("click", async (evt) => {
+    evt.target.disabled = true;
+    const notes = root.querySelector("textarea").value;
+    try {
+      await updateTracking(feature.properties.source, feature.properties.source_id, { notes });
+      feature.properties.notes = notes;
+      root.innerHTML = "";
+      render();
+    } catch (err) {
+      alert(`Could not save notes: ${err.message}`);
+      evt.target.disabled = false;
+    }
+  });
+}
+
+document.getElementById("list-body").addEventListener("click", async (e) => {
+  const row = e.target.closest("tr[data-source]");
+  if (!row) return;
+  const { source, sourceId } = row.dataset;
+  const feature = findFeature(source, sourceId);
+  if (!feature) return;
+
+  if (e.target.classList.contains("notes-btn")) {
+    openNotesModal(feature);
+  } else if (e.target.classList.contains("remove-btn")) {
+    if (!confirm(`Remove "${feature.properties.name || "(unnamed)"}" from your outreach list?`)) return;
+    try {
+      await updateTracking(source, sourceId, { reached_out: false });
+      trackedFeatures = trackedFeatures.filter((f) => f !== feature);
+      render();
+    } catch (err) {
+      alert(`Could not remove: ${err.message}`);
+    }
+  }
+});
+
+(async function init() {
+  const housing = await loadGeoJSON("data/housing_properties.geojson");
+  trackedFeatures = housing.features.filter((f) => !!f.properties.reached_out);
+  render();
+})();
+</script>
+</body>
+</html>

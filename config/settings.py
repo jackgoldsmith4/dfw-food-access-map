@@ -23,15 +23,13 @@ load_dotenv()
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
 RAW_DATA_DIR = DATA_DIR / "raw"
-PROCESSED_DATA_DIR = DATA_DIR / "processed"
 DB_PATH = DATA_DIR / "food_access.db"
 
-RAW_FOOD_STORES_DIR = RAW_DATA_DIR / "food_stores"
 RAW_POPULATION_DIR = RAW_DATA_DIR / "population"
 RAW_HOUSING_DIR = RAW_DATA_DIR / "housing"
 WEB_DATA_DIR = PROJECT_ROOT / "web" / "data"
 
-for _dir in (RAW_FOOD_STORES_DIR, RAW_POPULATION_DIR, RAW_HOUSING_DIR, PROCESSED_DATA_DIR, WEB_DATA_DIR):
+for _dir in (RAW_POPULATION_DIR, RAW_HOUSING_DIR, WEB_DATA_DIR):
     _dir.mkdir(parents=True, exist_ok=True)
 
 # --- Geographic scope ------------------------------------------------------

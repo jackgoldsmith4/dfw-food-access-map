@@ -18,6 +18,26 @@ and unit counts (TOTAL_DWELLING_UNITS) are per building, not per project —
 a real Dallas example ("Barbara Jordan Square") is a scattered-site
 project with many 1-unit building rows. That's the right granularity for
 mapping individual structures, just not for "how big is this development."
+
+`is_senior_housing` is derived from PCT_AGE62PLUS (the real, measured
+share of residents 62+), never from IS_202_811_IND/IS_ASSISTED_LIVING_IND
+— confirmed against a real pull that those program-eligibility flags are
+actively unreliable as a senior-housing signal: Section 811 is
+specifically for people *under* 62 with disabilities, but HUD reports it
+through the same combined "202_811" indicator as Section 202 (elderly),
+so a disability group home with 0% elderly residents (e.g. "ACCESSIBLE
+RESIDENCES," 100% PCT_DISABLED_ALL, 31.6% PCT_AGE62PLUS) was getting
+flagged senior by that flag alone. The real PCT_AGE62PLUS distribution
+across a real pull is cleanly bimodal (25 properties under 20% elderly,
+47 over 95%, only 8 in 50-80%), so 80% is used as the cutoff — it also
+matches the Housing for Older Persons Act's legal threshold (80%+
+occupancy by a 55+ resident) for an age-restricted community, not an
+arbitrary number. When PCT_AGE62PLUS itself isn't on file (-4, HUD's
+"not available" sentinel — not a real 0%), this is left `None` rather
+than falling back to the program flag: real named examples on file with
+no percentage data at all (e.g. "Community Options Carrollton," a known
+IDD group-home operator, not a senior provider) confirm the flag is
+wrong there too, so guessing via it is worse than admitting "unknown."
 """
 from __future__ import annotations
 
@@ -33,12 +53,23 @@ logger = logging.getLogger(__name__)
 
 PUBLIC_HOUSING_FIELDS = (
     "OBJECTID,PROJECT_NAME,STD_ADDR,STD_CITY,STD_ST,STD_ZIP5,TOTAL_DWELLING_UNITS,"
-    "CURCNTY,CNTY_NM2KX,LAT,LON"
+    "CURCNTY,CNTY_NM2KX,LAT,LON,PCT_AGE62PLUS"
 )
 MULTIFAMILY_ASSISTED_FIELDS = (
     "OBJECTID,PROPERTY_NAME_TEXT,STD_ADDR,STD_CITY,STD_ST,STD_ZIP5,TOTAL_ASSISTED_UNIT_COUNT,"
-    "TOTAL_UNIT_COUNT,CURCNTY,CNTY_NM2KX,IS_202_811_IND,IS_NURSING_HOME_IND,IS_ASSISTED_LIVING_IND,LAT,LON"
+    "TOTAL_UNIT_COUNT,CURCNTY,CNTY_NM2KX,IS_202_811_IND,IS_NURSING_HOME_IND,IS_ASSISTED_LIVING_IND,LAT,LON,"
+    "PCT_AGE62PLUS"
 )
+
+SENIOR_PCT_THRESHOLD = 80  # matches HOPA's 80%-occupancy bar for a legally age-restricted community
+NOT_AVAILABLE_SENTINEL = -4  # HUD's "not available" marker on PCT_* fields — not a real 0%
+
+
+def _is_senior_housing(props: dict) -> bool | None:
+    pct = props.get("PCT_AGE62PLUS")
+    if pct is None or pct == NOT_AVAILABLE_SENTINEL:
+        return None
+    return pct >= SENIOR_PCT_THRESHOLD
 
 
 def _where_clause() -> str:
@@ -92,6 +123,7 @@ def transform(raw_by_layer: dict[str, list[dict]]) -> list[HousingProperty]:
                 latitude=props.get("LAT"),
                 longitude=props.get("LON"),
                 total_units=props.get("TOTAL_DWELLING_UNITS"),
+                is_senior_housing=_is_senior_housing(props),
                 is_subsidized=True,
                 raw_json=json.dumps(props),
             )
@@ -99,7 +131,7 @@ def transform(raw_by_layer: dict[str, list[dict]]) -> list[HousingProperty]:
 
     for feature in raw_by_layer.get("multifamily_assisted", []):
         props = feature.get("properties", {})
-        is_senior_or_disability = props.get("IS_202_811_IND") == "Y" or props.get("IS_ASSISTED_LIVING_IND") == "Y"
+        is_senior_housing = _is_senior_housing(props)
         records.append(
             HousingProperty(
                 source="hud_multifamily_assisted",
@@ -114,7 +146,7 @@ def transform(raw_by_layer: dict[str, list[dict]]) -> list[HousingProperty]:
                 latitude=props.get("LAT"),
                 longitude=props.get("LON"),
                 total_units=props.get("TOTAL_ASSISTED_UNIT_COUNT") or props.get("TOTAL_UNIT_COUNT"),
-                is_senior_housing=is_senior_or_disability,
+                is_senior_housing=is_senior_housing,
                 is_subsidized=True,
                 raw_json=json.dumps(props),
             )

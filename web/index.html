@@ -51,7 +51,7 @@
   .maplibregl-popup-content h3 { margin: 0 0 4px; font-size: 13px; }
   .maplibregl-popup-content p { margin: 2px 0; color: #333; }
   .popup-actions { display: flex; gap: 6px; margin-top: 8px; }
-  .popup-actions button, .popup-edit-form button {
+  .popup-actions button, .popup-edit-form button, .tracking-section button {
     font-size: 12px; padding: 3px 8px; border: 1px solid var(--border); border-radius: 4px;
     background: var(--surface); cursor: pointer;
   }
@@ -62,6 +62,8 @@
     border: 1px solid var(--border); border-radius: 4px;
   }
   .popup-edit-form .popup-actions { margin-top: 10px; }
+  .tracking-section label { font-size: 13px; margin-bottom: 4px; }
+  .tracking-section p { font-size: 12px; margin: 4px 0 6px; }
 </style>
 </head>
 <body>
@@ -71,7 +73,8 @@
 <div class="panel">
   <h1>DFW Food Access Map</h1>
   <a href="opportunity.html" style="display:block; font-size:12px; color:var(--blue); text-decoration:none; margin:-4px 0 2px;">View housing opportunity ranking &rarr;</a>
-  <a href="opportunity_tracts.html" style="display:block; font-size:12px; color:var(--blue); text-decoration:none; margin:0 0 10px;">View tract opportunity ranking &rarr;</a>
+  <a href="opportunity_tracts.html" style="display:block; font-size:12px; color:var(--blue); text-decoration:none; margin:0 0 2px;">View tract opportunity ranking &rarr;</a>
+  <a href="outreach.html" style="display:block; font-size:12px; color:var(--blue); text-decoration:none; margin:0 0 10px;">View outreach tracker &rarr;</a>
 
   <div style="margin-bottom:10px;">
     <input type="text" id="search-name" placeholder="Search by name"
@@ -256,17 +259,81 @@ const LAYER_CONFIG = {
   },
 };
 
-function popupViewHTML(props) {
-  const rows = Object.entries(props)
-    .filter(([k, v]) => v !== null && v !== "" && k !== "source" && k !== "source_id")
-    .map(([k, v]) => `<p><strong>${k.replace(/_/g, " ")}:</strong> ${v}</p>`)
-    .join("");
+// Tract-level fields joined onto housing properties (see export/geojson.py)
+// need real formatting, not a raw dump of counts/decimals — a poverty
+// rate reads as "poverty count: 1541 / poverty universe: 8714" otherwise.
+// poverty/SNAP arrive as a count+universe pair; both are consumed into
+// one derived percentage row when the first of the pair is reached, and
+// the second is skipped via SKIP_FIELDS so it doesn't also print raw.
+// reached_out/notes are handled by the housing-only tracking section
+// below, not the generic field dump.
+const SKIP_FIELDS = new Set(["source", "source_id", "tract_poverty_universe", "tract_snap_universe", "reached_out", "notes"]);
+
+function escapeHtml(s) {
+  return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+const FIELD_FORMATTERS = {
+  tract_geoid: (v) => ["Census tract", v],
+  tract_median_household_income: (v) => ["Tract median household income", `$${Math.round(v).toLocaleString()}`],
+  tract_pct_low_access_half_mile: (v) => ["Tract USDA low-access rate", `${v.toFixed(0)}%`],
+  tract_poverty_count: (v, props) =>
+    props.tract_poverty_universe ? ["Tract poverty rate", `${((v / props.tract_poverty_universe) * 100).toFixed(0)}%`] : null,
+  tract_snap_households: (v, props) =>
+    props.tract_snap_universe ? ["Tract SNAP participation rate", `${((v / props.tract_snap_universe) * 100).toFixed(0)}%`] : null,
+};
+
+function popupViewHTML(props, extraSectionsHTML = "") {
+  const rows = [];
+  for (const [k, v] of Object.entries(props)) {
+    if (v === null || v === "" || SKIP_FIELDS.has(k)) continue;
+    const formatted = FIELD_FORMATTERS[k] ? FIELD_FORMATTERS[k](v, props) : [k.replace(/_/g, " "), v];
+    if (formatted) rows.push(formatted);
+  }
+  const rowsHTML = rows.map(([label, value]) => `<p><strong>${label}:</strong> ${value}</p>`).join("");
+
   return `
     <h3>${props.name || "(unnamed)"}</h3>
-    ${rows}
+    ${rowsHTML}
+    ${extraSectionsHTML}
     <div class="popup-actions">
       <button class="popup-edit-btn">Edit</button>
       <button class="popup-delete-btn">Delete</button>
+    </div>
+  `;
+}
+
+// Housing-only personal outreach tracking, shown below a housing
+// property's normal fields — a separate concern from Edit/Delete (see
+// webapp.py's TRACKABLE_FIELDS), so it's its own section rather than
+// folded into the name/type edit form.
+function housingTrackingHTML(props) {
+  const notesPreview = props.notes
+    ? `<p style="font-style:italic; color:var(--ink-secondary);">"${escapeHtml(
+        props.notes.length > 80 ? props.notes.slice(0, 80) + "…" : props.notes
+      )}"</p>`
+    : `<p style="color:var(--ink-secondary);">No notes yet.</p>`;
+
+  return `
+    <div class="tracking-section" style="margin-top:8px; padding-top:8px; border-top:1px solid var(--border);">
+      <label style="display:flex; align-items:center; gap:6px;">
+        <input type="checkbox" class="popup-reached-out" ${props.reached_out ? "checked" : ""}>
+        Reached out
+      </label>
+      ${notesPreview}
+      <button class="popup-notes-btn">${props.notes ? "Edit notes" : "Add notes"}</button>
+    </div>
+  `;
+}
+
+function notesEditorHTML(props) {
+  return `
+    <h3>${props.name || "(unnamed)"}</h3>
+    <div class="popup-edit-form">
+      <label>Notes<textarea class="popup-notes-input" rows="5" style="width:100%; box-sizing:border-box; font-family:inherit; font-size:13px; padding:4px 6px; border:1px solid var(--border); border-radius:4px;">${escapeHtml(props.notes)}</textarea></label>
+      <div class="popup-actions">
+        <button class="popup-notes-save-btn">Save</button>
+        <button class="popup-notes-cancel-btn">Cancel</button>
+      </div>
     </div>
   `;
 }
@@ -314,10 +381,15 @@ function openFeaturePopup(id, feature, dataset, refresh) {
   const popup = new maplibregl.Popup().setLngLat(feature.geometry.coordinates).addTo(map);
 
   function renderView() {
-    popup.setHTML(popupViewHTML(props));
+    const extra = id === "housing" ? housingTrackingHTML(props) : "";
+    popup.setHTML(popupViewHTML(props, extra));
     const el = popup.getElement();
     el.querySelector(".popup-edit-btn").addEventListener("click", renderEdit);
     el.querySelector(".popup-delete-btn").addEventListener("click", handleDelete);
+    if (id === "housing") {
+      el.querySelector(".popup-reached-out").addEventListener("change", handleReachedOutToggle);
+      el.querySelector(".popup-notes-btn").addEventListener("click", renderNotesEditor);
+    }
   }
 
   function renderEdit() {
@@ -325,6 +397,60 @@ function openFeaturePopup(id, feature, dataset, refresh) {
     const el = popup.getElement();
     el.querySelector(".popup-cancel-btn").addEventListener("click", renderView);
     el.querySelector(".popup-save-btn").addEventListener("click", handleSave);
+  }
+
+  function renderNotesEditor() {
+    popup.setHTML(notesEditorHTML(props));
+    const el = popup.getElement();
+    el.querySelector(".popup-notes-cancel-btn").addEventListener("click", renderView);
+    el.querySelector(".popup-notes-save-btn").addEventListener("click", handleNotesSave);
+  }
+
+  async function handleReachedOutToggle(evt) {
+    const reachedOut = evt.target.checked;
+    try {
+      const res = await fetch("/api/housing/track", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source: props.source, source_id: props.source_id, reached_out: reachedOut }),
+      });
+      if (!res.ok) throw new Error(`update failed: ${res.status}`);
+
+      props.reached_out = reachedOut ? 1 : 0;
+      const stored = dataset.features.find(
+        (f) => f.properties.source === props.source && f.properties.source_id === props.source_id
+      );
+      if (stored) stored.properties.reached_out = props.reached_out;
+    } catch (err) {
+      alert(`Could not update: ${err.message}`);
+      evt.target.checked = !reachedOut;
+    }
+  }
+
+  async function handleNotesSave(evt) {
+    const button = evt.target;
+    button.disabled = true;
+    const el = popup.getElement();
+    const notes = el.querySelector(".popup-notes-input").value;
+
+    try {
+      const res = await fetch("/api/housing/track", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source: props.source, source_id: props.source_id, notes }),
+      });
+      if (!res.ok) throw new Error(`save failed: ${res.status}`);
+
+      props.notes = notes;
+      const stored = dataset.features.find(
+        (f) => f.properties.source === props.source && f.properties.source_id === props.source_id
+      );
+      if (stored) stored.properties.notes = notes;
+      renderView();
+    } catch (err) {
+      alert(`Could not save notes: ${err.message}`);
+      button.disabled = false;
+    }
   }
 
   async function handleSave(evt) {
@@ -659,12 +785,11 @@ async function handleDeepLink({ stores, housing, applyStoresFilter, applyHousing
 // sized from that real land area (radius = sqrt(land_sqmi / pi)), not a
 // claim about the tract's actual (usually irregular) shape.
 function makeCirclePolygon(lat, lon, radiusMiles, points = 64) {
-  const milesPerDegLat = 69.05;
   const coords = [];
   for (let i = 0; i <= points; i++) {
     const angle = (i / points) * 2 * Math.PI;
-    const dLat = ((radiusMiles * Math.sin(angle)) / milesPerDegLat);
-    const dLon = (radiusMiles * Math.cos(angle)) / (milesPerDegLat * Math.cos((lat * Math.PI) / 180));
+    const dLat = ((radiusMiles * Math.sin(angle)) / MI_PER_DEG_LAT);
+    const dLon = (radiusMiles * Math.cos(angle)) / (MI_PER_DEG_LAT * Math.cos((lat * Math.PI) / 180));
     coords.push([lon + dLon, lat + dLat]);
   }
   return { type: "Polygon", coordinates: [coords] };

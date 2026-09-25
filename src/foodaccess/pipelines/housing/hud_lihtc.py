@@ -24,6 +24,14 @@ Dictionary (April 2026)" bundled in the ZIP). Two things worth knowing:
     there's no county to key on. Of the rows that DO resolve to a DFW
     county, all had coordinates directly in a real pull, so this mostly
     just drops legitimately unresolved records, not usable ones.
+  - `trgt_eld` ("targets a specific population - elderly") is a clean,
+    elderly-specific field per HUD's own data dictionary (1=Yes, 2=No, 0
+    or blank=Not indicated) — unlike the eGIS Resource Locator's combined
+    202/811 indicator (see hud_resource_locator.py), there's no
+    conflation with disability-only housing here. The real bug was
+    treating missing/0 as "No" instead of "unknown": nearly half of all
+    national records have no value at all, and those were being asserted
+    as confidently not-senior.
 """
 from __future__ import annotations
 
@@ -52,6 +60,16 @@ def fetch() -> Path:
 
 def _clean(value):
     return None if value is None or pd.isna(value) else value
+
+
+def _is_senior_housing(trgt_eld) -> bool | None:
+    """TRGT_ELD per HUD's own data dictionary: 1=Yes, 2=No, 0 or blank=Not
+    indicated. Missing/0 must stay unknown, not collapse to "No" — nearly
+    half of all national records have no value here at all."""
+    trgt_eld = _clean(trgt_eld)
+    if trgt_eld is None or trgt_eld == 0:
+        return None
+    return trgt_eld == 1
 
 
 def transform(raw_path: Path) -> list[HousingProperty]:
@@ -85,7 +103,7 @@ def transform(raw_path: Path) -> list[HousingProperty]:
                 latitude=float(latitude) if latitude is not None else None,
                 longitude=float(longitude) if longitude is not None else None,
                 total_units=int(total_units) if total_units is not None else None,
-                is_senior_housing=_clean(row.get("trgt_eld")) == 1,
+                is_senior_housing=_is_senior_housing(row.get("trgt_eld")),
                 is_subsidized=True,
             )
         )

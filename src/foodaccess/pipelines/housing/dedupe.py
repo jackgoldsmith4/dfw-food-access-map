@@ -58,15 +58,13 @@ delete or edit a human already made is never a candidate to be
 from __future__ import annotations
 
 import logging
-import re
-from math import asin, cos, radians, sin, sqrt
 
+from foodaccess.common.geo import grid_key, haversine_meters, neighboring_keys, normalize_name
 from foodaccess.storage.database import get_connection
 
 logger = logging.getLogger(__name__)
 
 MATCH_DISTANCE_METERS = 250
-GRID_PRECISION = 2  # ~1km cells — a cheap proximity index, not real spatial indexing
 
 # Higher wins. hud_public_housing is intentionally absent — see module docstring.
 SOURCE_PRIORITY = {
@@ -82,45 +80,19 @@ SOURCE_PRIORITY = {
 BACKFILL_FIELDS = ["name", "address", "city", "zip_code", "total_units", "is_senior_housing", "is_subsidized"]
 
 
-def _normalize_name(name: str | None) -> str:
-    name = re.sub(r"[^A-Za-z\s]", "", name or "").upper()
-    return re.sub(r"\s+", " ", name).strip()
-
-
-def _haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    r = 6371000
-    phi1, phi2 = radians(lat1), radians(lat2)
-    dphi = radians(lat2 - lat1)
-    dlambda = radians(lon2 - lon1)
-    a = sin(dphi / 2) ** 2 + cos(phi1) * cos(phi2) * sin(dlambda / 2) ** 2
-    return 2 * r * asin(sqrt(a))
-
-
-def _grid_key(lat: float, lon: float) -> tuple[float, float]:
-    return (round(lat, GRID_PRECISION), round(lon, GRID_PRECISION))
-
-
-def _neighboring_keys(lat: float, lon: float):
-    step = 10**-GRID_PRECISION
-    base_lat, base_lon = _grid_key(lat, lon)
-    for d_lat in (-step, 0, step):
-        for d_lon in (-step, 0, step):
-            yield (round(base_lat + d_lat, GRID_PRECISION), round(base_lon + d_lon, GRID_PRECISION))
-
-
 def _find_edges(rows: list[dict]) -> list[tuple[int, int]]:
     """Pairs of row indices judged to be the same physical property."""
     by_cell: dict[tuple, list[int]] = {}
     for i, row in enumerate(rows):
-        by_cell.setdefault(_grid_key(row["latitude"], row["longitude"]), []).append(i)
+        by_cell.setdefault(grid_key(row["latitude"], row["longitude"]), []).append(i)
 
-    names = [_normalize_name(row["name"]) for row in rows]
+    names = [normalize_name(row["name"]) for row in rows]
     edges = []
     seen = set()
     for i, row in enumerate(rows):
         if not names[i]:
             continue
-        for key in _neighboring_keys(row["latitude"], row["longitude"]):
+        for key in neighboring_keys(row["latitude"], row["longitude"]):
             for j in by_cell.get(key, []):
                 if j <= i or rows[j]["source"] == row["source"] or not names[j]:
                     continue
@@ -130,7 +102,7 @@ def _find_edges(rows: list[dict]) -> list[tuple[int, int]]:
                 seen.add(pair)
                 if names[i] not in names[j] and names[j] not in names[i]:
                     continue
-                distance = _haversine_meters(row["latitude"], row["longitude"], rows[j]["latitude"], rows[j]["longitude"])
+                distance = haversine_meters(row["latitude"], row["longitude"], rows[j]["latitude"], rows[j]["longitude"])
                 if distance <= MATCH_DISTANCE_METERS:
                     edges.append(pair)
     return edges

@@ -33,9 +33,8 @@ stays tight.
 from __future__ import annotations
 
 import logging
-import re
-from math import asin, cos, radians, sin, sqrt
 
+from foodaccess.common.geo import grid_key, haversine_meters, neighboring_keys, normalize_name
 from foodaccess.storage.database import get_connection
 
 logger = logging.getLogger(__name__)
@@ -45,56 +44,29 @@ MATCH_DISTANCE_METERS = {
     "grocery": 500,      # sparse format — shopping-center address geocoding can drift a few hundred meters
 }
 DEFAULT_MATCH_DISTANCE_METERS = 250
-GRID_PRECISION = 2  # ~1km cells — a cheap proximity index, not real spatial indexing
-
-
-def _normalize_name(name: str | None) -> str:
-    name = re.sub(r"[^A-Za-z\s]", "", name or "").upper()
-    return re.sub(r"\s+", " ", name).strip()
-
-
-def _haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    r = 6371000
-    phi1, phi2 = radians(lat1), radians(lat2)
-    dphi = radians(lat2 - lat1)
-    dlambda = radians(lon2 - lon1)
-    a = sin(dphi / 2) ** 2 + cos(phi1) * cos(phi2) * sin(dlambda / 2) ** 2
-    return 2 * r * asin(sqrt(a))
-
-
-def _grid_key(lat: float, lon: float) -> tuple[float, float]:
-    return (round(lat, GRID_PRECISION), round(lon, GRID_PRECISION))
-
-
-def _neighboring_keys(lat: float, lon: float):
-    step = 10**-GRID_PRECISION
-    base_lat, base_lon = _grid_key(lat, lon)
-    for d_lat in (-step, 0, step):
-        for d_lon in (-step, 0, step):
-            yield (round(base_lat + d_lat, GRID_PRECISION), round(base_lon + d_lon, GRID_PRECISION))
 
 
 def _find_matches(usda_rows: list, osm_rows: list) -> tuple[list[tuple[str, dict]], set[str]]:
     usda_by_cell: dict[tuple, list] = {}
     for row in usda_rows:
-        usda_by_cell.setdefault(_grid_key(row["latitude"], row["longitude"]), []).append(row)
+        usda_by_cell.setdefault(grid_key(row["latitude"], row["longitude"]), []).append(row)
 
     merges: list[tuple[str, dict]] = []
     matched_osm_ids: set[str] = set()
 
     for osm_row in osm_rows:
-        osm_name = _normalize_name(osm_row["name"])
+        osm_name = normalize_name(osm_row["name"])
         if not osm_name:
             continue
 
         candidates = [
-            u for key in _neighboring_keys(osm_row["latitude"], osm_row["longitude"]) for u in usda_by_cell.get(key, [])
+            u for key in neighboring_keys(osm_row["latitude"], osm_row["longitude"]) for u in usda_by_cell.get(key, [])
         ]
         for usda_row in candidates:
-            usda_name = _normalize_name(usda_row["name"])
+            usda_name = normalize_name(usda_row["name"])
             if not usda_name or (osm_name not in usda_name and usda_name not in osm_name):
                 continue
-            distance = _haversine_meters(
+            distance = haversine_meters(
                 osm_row["latitude"], osm_row["longitude"], usda_row["latitude"], usda_row["longitude"]
             )
             threshold = MATCH_DISTANCE_METERS.get(osm_row["store_type"], DEFAULT_MATCH_DISTANCE_METERS)

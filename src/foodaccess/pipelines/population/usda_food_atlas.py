@@ -63,6 +63,15 @@ def _sheet_rows_by_header(ws) -> tuple[list[str], "openpyxl.worksheet._read_only
     return list(header), rows
 
 
+def _require_columns(col: dict, required: tuple[str, ...], sheet_name: str, header: list[str]) -> None:
+    missing = [c for c in required if c not in col]
+    if missing:
+        raise NotImplementedError(
+            f"USDA SRAM '{sheet_name}' sheet is missing expected columns {missing}. "
+            f"Actual columns: {header}. USDA may have changed the SRAM layout again — update this module."
+        )
+
+
 def transform(raw_path: Path) -> list[FoodAccessAtlasRecord]:
     dfw_codes = set(settings.DFW_COUNTY_FIPS)
     wb = openpyxl.load_workbook(raw_path, read_only=True, data_only=True)
@@ -72,12 +81,7 @@ def transform(raw_path: Path) -> list[FoodAccessAtlasRecord]:
     header, rows = _sheet_rows_by_header(ws)
     col = {name: i for i, name in enumerate(header) if name}
 
-    missing = [c for c in ("CensusTract20", "Urban", "POP2020") if c not in col]
-    if missing:
-        raise NotImplementedError(
-            f"USDA SRAM '{CHARACTERISTICS_SHEET}' sheet is missing expected columns {missing}. "
-            f"Actual columns: {header}. USDA may have changed the SRAM layout again — update this module."
-        )
+    _require_columns(col, ("CensusTract20", "Urban", "POP2020"), CHARACTERISTICS_SHEET, header)
 
     tracts: dict[str, dict] = {}
     for row in rows:
@@ -94,12 +98,7 @@ def transform(raw_path: Path) -> list[FoodAccessAtlasRecord]:
     header, rows = _sheet_rows_by_header(ws)
     col = {name: i for i, name in enumerate(header) if name}
 
-    missing = [c for c in ("CensusTract20", LILA_FLAG_COLUMN, LOW_ACCESS_SHARE_COLUMN) if c not in col]
-    if missing:
-        raise NotImplementedError(
-            f"USDA SRAM '{DRIVING_DISTANCE_SHEET}' sheet is missing expected columns {missing}. "
-            f"Actual columns: {header}. USDA may have changed the SRAM layout again — update this module."
-        )
+    _require_columns(col, ("CensusTract20", LILA_FLAG_COLUMN, LOW_ACCESS_SHARE_COLUMN), DRIVING_DISTANCE_SHEET, header)
 
     for row in rows:
         tract_geoid = str(row[col["CensusTract20"]])

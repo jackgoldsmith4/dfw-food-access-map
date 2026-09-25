@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
 
 from config import settings
 from foodaccess.storage.database import get_connection
@@ -34,6 +33,7 @@ FOOD_STORE_QUERY = (
 HOUSING_COLUMNS = [
     "h.source", "h.source_id", "h.name", "h.property_type", "h.address", "h.city",
     "h.total_units", "h.is_senior_housing", "h.is_subsidized", "h.latitude", "h.longitude",
+    "h.tract_geoid", "h.reached_out", "h.notes",
 ]
 
 # One row per tract exists in each table today (2023 census_acs5;

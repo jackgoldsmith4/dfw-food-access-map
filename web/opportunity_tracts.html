@@ -73,6 +73,8 @@
       whether any specific housing property sits there. For "which
       existing complex needs help most," see the housing ranking instead.
     </div>
+    <input type="text" id="search-tract" placeholder="Search by tract number or county"
+      style="width:100%; box-sizing:border-box; padding:5px 7px; font-size:13px; border:1px solid var(--border); border-radius:4px; margin-bottom:16px;">
     <div id="slider-list"></div>
   </div>
 
@@ -95,6 +97,7 @@
   </div>
 </div>
 
+<script src="ranking.js"></script>
 <script>
 // Same architecture as opportunity.html (housing ranking): raw values +
 // percentiles computed once at load, sliders only rerun the weighted sum
@@ -102,6 +105,9 @@
 // percentile rank needs the whole eligible set, so it can't be a pure
 // per-row function in isolation, but everything downstream of the
 // once-built percentile table is instant, no server round-trip.
+// (The generic scoring engine — assignPercentiles/computeScore/
+// readWeights/buildSliders/loadGeoJSON, and the list-body click
+// delegation — lives in ranking.js, shared with that page.)
 //
 // "Density" (population / land_sqmi) replaces housing's "total units" as
 // the "how many people does this affect" factor — this project's very
@@ -125,27 +131,6 @@ const COUNTY_NAMES = {
   "48367": "Parker", "48397": "Rockwall", "48439": "Tarrant", "48497": "Wise",
 };
 
-function haversineMiles(lat1, lon1, lat2, lon2) {
-  const R = 3958.8;
-  const toRad = (d) => (d * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(a));
-}
-
-// Brute-force nearest-store search — ~1,718 tracts x ~1,300 grocery/mass
-// stores is a couple million haversine calls, well under a second in JS,
-// same reasoning as the housing ranking page. Runs once at load.
-function nearestStoreMiles(lat, lon, stores) {
-  let best = Infinity;
-  for (const s of stores) {
-    const d = haversineMiles(lat, lon, s.lat, s.lon);
-    if (d < best) best = d;
-  }
-  return best;
-}
-
 function computeRawMetrics(features, stores) {
   for (const f of features) {
     const p = f.properties;
@@ -161,38 +146,12 @@ function computeRawMetrics(features, stores) {
 
 // A tract missing a given raw value gets a neutral 0.5 percentile for
 // that metric, same convention as the housing ranking page.
-function assignPercentiles(features, rawKey, pctKey, higherIsBetter) {
-  const withValue = features.filter((f) => f.properties[rawKey] != null && isFinite(f.properties[rawKey]));
-  withValue.sort((a, b) => a.properties[rawKey] - b.properties[rawKey]);
-  const n = withValue.length;
-  withValue.forEach((f, i) => {
-    const rank = n <= 1 ? 0.5 : i / (n - 1);
-    f.properties[pctKey] = higherIsBetter ? rank : 1 - rank;
-  });
-  for (const f of features) {
-    if (f.properties[rawKey] == null || !isFinite(f.properties[rawKey])) {
-      f.properties[pctKey] = 0.5;
-    }
-  }
-}
+// (assignPercentiles/computeScore/readWeights live in ranking.js.)
 
-function computeScore(feature, weights) {
-  return METRICS.reduce((sum, m) => sum + weights[m.key] * feature.properties[`_pct_${m.key}`], 0);
-}
-
-function readWeights() {
-  const weights = {};
-  for (const m of METRICS) {
-    weights[m.key] = Number(document.getElementById(`slider-${m.key}`).value);
-  }
-  return weights;
-}
-
-function renderList(sortedFeatures) {
+function renderList(sortedFeatures, maxScore) {
   const rows = sortedFeatures
     .map((f, i) => {
       const p = f.properties;
-      const maxScore = METRICS.reduce((sum, m) => sum + Number(document.getElementById(`slider-${m.key}`).value), 0);
       const scorePct = maxScore > 0 ? Math.round((p._score / maxScore) * 100) : 0;
       const countyName = COUNTY_NAMES[p.tract_geoid.slice(0, 5)] || p.tract_geoid.slice(0, 5);
       const tractBits = [];
@@ -226,47 +185,33 @@ function renderList(sortedFeatures) {
   document.getElementById("list-body").innerHTML = rows;
 }
 
+// Matches on the tract number itself or its county name (a tract has no
+// "name" the way a store/housing property does) — same case-insensitive
+// substring convention as the map's search box.
+function matchesTractSearch(props) {
+  const term = document.getElementById("search-tract").value.trim().toLowerCase();
+  if (!term) return true;
+  const countyName = COUNTY_NAMES[props.tract_geoid.slice(0, 5)] || "";
+  return props.tract_geoid.toLowerCase().includes(term) || countyName.toLowerCase().includes(term);
+}
+
 function rerank(features) {
   const weights = readWeights();
+  // Scored and percentile-ranked against every tract regardless of the
+  // search box, so a tract's score always reflects its standing across
+  // the whole metro — search only narrows which rows are displayed.
   for (const f of features) {
     f.properties._score = computeScore(f, weights);
   }
-  const sorted = [...features].sort((a, b) => b.properties._score - a.properties._score);
-  renderList(sorted);
+  const matching = features.filter((f) => matchesTractSearch(f.properties));
+  const sorted = [...matching].sort((a, b) => b.properties._score - a.properties._score);
+  const maxScore = Object.values(weights).reduce((sum, w) => sum + w, 0);
+  renderList(sorted, maxScore);
+  document.getElementById("count-line").textContent =
+    matching.length === features.length
+      ? `${features.length.toLocaleString()} DFW-metro census tracts ranked`
+      : `${matching.length.toLocaleString()} of ${features.length.toLocaleString()} DFW-metro census tracts shown`;
 }
-
-function buildSliders(onChange) {
-  const container = document.getElementById("slider-list");
-  container.innerHTML = METRICS.map(
-    (m) => `
-      <div class="slider-row">
-        <label>${m.label}<span class="weight-value" id="weight-${m.key}">${m.default}</span></label>
-        <input type="range" id="slider-${m.key}" min="0" max="10" step="1" value="${m.default}">
-      </div>
-    `
-  ).join("");
-
-  for (const m of METRICS) {
-    const slider = document.getElementById(`slider-${m.key}`);
-    slider.addEventListener("input", () => {
-      document.getElementById(`weight-${m.key}`).textContent = slider.value;
-      onChange();
-    });
-  }
-}
-
-async function loadGeoJSON(url) {
-  const res = await fetch(url);
-  return res.json();
-}
-
-// Event delegation on the tbody, not a per-row listener — rows are
-// replaced wholesale on every rerank(), so a listener attached directly
-// to a <tr> would be gone after the very next slider move.
-document.getElementById("list-body").addEventListener("click", (e) => {
-  const row = e.target.closest("tr[data-href]");
-  if (row) window.location.href = row.dataset.href;
-});
 
 (async function init() {
   const [tracts, stores] = await Promise.all([
@@ -287,9 +232,8 @@ document.getElementById("list-body").addEventListener("click", (e) => {
   assignPercentiles(features, "_snap", "_pct_snap", true);
   assignPercentiles(features, "_lowAccess", "_pct_lowAccess", true);
 
-  document.getElementById("count-line").textContent = `${features.length.toLocaleString()} DFW-metro census tracts ranked`;
-
   buildSliders(() => rerank(features));
+  document.getElementById("search-tract").addEventListener("input", () => rerank(features));
   rerank(features);
 })();
 </script>
